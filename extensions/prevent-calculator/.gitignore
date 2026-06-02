@@ -1,0 +1,14 @@
+.claude
+.pytest_cache
+__pycache__
+.coverage
+*.pyc
+.mypy_cache
+.venv
+
+# Parent gitignore excludes lib/ (Python build artifact). Our plugin uses
+# prevent_calculator/lib/ as a code-organization module — re-include the
+# Python sources but keep __pycache__ ignored.
+!prevent_calculator/lib/
+!prevent_calculator/lib/*.py
+prevent_calculator/lib/__pycache__/
