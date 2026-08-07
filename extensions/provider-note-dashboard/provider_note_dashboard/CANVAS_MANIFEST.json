@@ -1,0 +1,38 @@
+{
+    "sdk_version": "0.1.4",
+    "plugin_version": "0.0.4",
+    "name": "provider_note_dashboard",
+    "description": "Dashboard of notes written per provider by day, week, and month.",
+    "url_permissions": [],
+    "components": {
+        "applications": [
+            {
+                "class": "provider_note_dashboard.applications.dashboard_application:NoteDashboardApplication",
+                "name": "Note Dashboard",
+                "description": "Notes written per provider by day, week, and month.",
+                "scope": "provider_menu_item",
+                "icon": "assets/python-logo.png",
+                "menu_position": "top",
+                "menu_order": 100
+            }
+        ],
+        "handlers": [
+            {
+                "class": "provider_note_dashboard.handlers.api:NoteDashboardAPI",
+                "description": "Serves the note dashboard page and its static assets."
+            }
+        ],
+        "commands": [],
+        "content": [],
+        "effects": [],
+        "views": []
+    },
+    "variables": [
+        {"name": "lead_staff_keys", "sensitive": false}
+    ],
+    "tags": {},
+    "references": [],
+    "license": "",
+    "diagram": false,
+    "readme": "./README.md"
+}

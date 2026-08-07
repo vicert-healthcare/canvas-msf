@@ -1,0 +1,597 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link href="https://fonts.googleapis.com/css?family=Lato:400,700,400italic,700italic&subset=latin" rel="stylesheet">
+  <link rel="stylesheet" href="/plugin-io/api/provider_note_dashboard/app/canvas-plugin-ui.css">
+  <script src="/plugin-io/api/provider_note_dashboard/app/canvas-plugin-ui.js"></script>
+  <style>
+    .pnd-page {
+      position: absolute;
+      inset: 0;
+      overflow: auto;
+      box-sizing: border-box;
+      padding: var(--space-huge);
+      font-family: var(--font-family);
+      color: var(--color-text);
+      background: var(--color-surface);
+    }
+    .pnd-page__intro {
+      max-width: 60ch;
+      color: var(--color-text-muted);
+      margin-bottom: var(--space-large);
+    }
+    .pnd-controls {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-end;
+      flex-wrap: wrap;
+      gap: var(--space-medium);
+      margin-bottom: var(--space-medium);
+    }
+    .pnd-nav {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: var(--space-small);
+    }
+    .pnd-window-label {
+      color: var(--color-text-muted);
+      font-weight: var(--font-weight-bold);
+    }
+    /* The dashboard reuses the design system dropdown caret as its window
+       arrows. The caret is a down pointing triangle, so a quarter turn each way
+       yields a left arrow for Previous and a right arrow for Next. */
+    .pnd-arrow {
+      display: block;
+      width: 12px;
+      height: 7px;
+    }
+    .pnd-arrow--prev { transform: rotate(90deg); }
+    .pnd-arrow--next { transform: rotate(-90deg); }
+    .pnd-filter {
+      flex: 0 1 320px;
+      max-width: 320px;
+    }
+    .pnd-results {
+      margin-top: var(--space-medium);
+    }
+    .pnd-count-table,
+    .pnd-detail-table {
+      min-width: 100%;
+    }
+    .pnd-zero,
+    .pnd-muted {
+      color: var(--color-text-muted);
+    }
+    .pnd-code {
+      margin-bottom: var(--space-mini);
+    }
+    .pnd-detail-empty {
+      color: var(--color-text-muted);
+      padding: var(--space-small) 0;
+    }
+    /* The detail modal pager. The range sits at the start and the two
+       directional buttons at the end, reusing the window arrow chevrons. */
+    .pnd-pager {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: var(--space-small);
+      margin-top: var(--space-medium);
+    }
+    .pnd-pager-range {
+      color: var(--color-text-muted);
+    }
+    .pnd-empty {
+      padding: var(--space-huge);
+      text-align: center;
+    }
+    .pnd-empty h3 {
+      margin: 0 0 var(--space-small);
+      font-weight: var(--font-weight-bold);
+    }
+    .pnd-empty p {
+      margin: 0 0 var(--space-medium);
+      color: var(--color-text-muted);
+    }
+  </style>
+</head>
+<body>
+  <main class="pnd-page">
+    <h1>Note dashboard</h1>
+    <p class="pnd-page__intro">Notes written per provider, grouped by day, week, and month.</p>
+
+    <div class="pnd-controls">
+      <div class="pnd-nav">
+        <canvas-button-group>
+          <canvas-button id="pnd-prev" aria-label="Previous period">
+            <svg class="pnd-arrow pnd-arrow--prev" viewBox="0 0 10 6" fill="currentColor" aria-hidden="true"><path d="M1 0h8a1 1 0 01.7 1.7l-4 4a1 1 0 01-1.4 0l-4-4A1 1 0 011 0z"/></svg>
+          </canvas-button>
+          <canvas-button id="pnd-today">Today</canvas-button>
+          <canvas-button id="pnd-next" aria-label="Next period">
+            <svg class="pnd-arrow pnd-arrow--next" viewBox="0 0 10 6" fill="currentColor" aria-hidden="true"><path d="M1 0h8a1 1 0 01.7 1.7l-4 4a1 1 0 01-1.4 0l-4-4A1 1 0 011 0z"/></svg>
+          </canvas-button>
+        </canvas-button-group>
+        <span class="pnd-window-label" id="pnd-window-label"></span>
+      </div>
+      <div class="pnd-filter" id="pnd-provider"></div>
+    </div>
+
+    <canvas-tabs id="pnd-tabs">
+      <canvas-tab for="panel-day"><canvas-tab-label>Daily</canvas-tab-label></canvas-tab>
+      <canvas-tab for="panel-week" active><canvas-tab-label>Weekly</canvas-tab-label></canvas-tab>
+      <canvas-tab for="panel-month"><canvas-tab-label>Monthly</canvas-tab-label></canvas-tab>
+
+      <canvas-tab-panel id="panel-day"><div class="pnd-results" id="results-day" aria-live="polite"></div></canvas-tab-panel>
+      <canvas-tab-panel id="panel-week"><div class="pnd-results" id="results-week" aria-live="polite"></div></canvas-tab-panel>
+      <canvas-tab-panel id="panel-month"><div class="pnd-results" id="results-month" aria-live="polite"></div></canvas-tab-panel>
+    </canvas-tabs>
+  </main>
+
+  <canvas-modal id="pnd-detail-modal" size="full">
+    <canvas-modal-header dismissable><span id="pnd-detail-title">Notes</span></canvas-modal-header>
+    <canvas-modal-content>
+      <div id="pnd-detail-body"></div>
+    </canvas-modal-content>
+  </canvas-modal>
+
+  <script>
+    (function () {
+      "use strict";
+
+      // The one base every route hangs off, the plugin name and the app prefix
+      // the handler declares. The page, the assets, and the two data routes all
+      // sit under it, so the head links and these fetches share one origin path.
+      var BASE = "/plugin-io/api/provider_note_dashboard/app";
+
+      // The window size per view. This is the single source of the span, sent as
+      // an explicit periods parameter so the backend and the navigator agree, and
+      // used as the step the navigator shifts the anchor by so windows tile with
+      // no overlap and no gap. It mirrors the strategy defaults on the backend.
+      var PERIODS = { day: 14, week: 8, month: 6 };
+
+      var PANEL_VIEW = {
+        "panel-day": "day",
+        "panel-week": "week",
+        "panel-month": "month"
+      };
+
+      // The viewer's zone, read from the browser, sent as tz on every request so
+      // buckets and times localize to the viewer rather than sitting in UTC.
+      var ZONE = "UTC";
+      try {
+        ZONE = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+      } catch (e) {
+        ZONE = "UTC";
+      }
+
+      var state = { view: "week", anchor: todayISO(), provider: "" };
+
+      // The last counts payload per view, so a provider filter change re renders
+      // the table from memory rather than refetching, and the rendered detail per
+      // provider, reset whenever a fresh counts payload arrives.
+      var lastData = {};
+      var detailCache = {};
+
+      // The provider whose detail the shared modal is currently showing, used to
+      // discard a late fetch for a provider the user has navigated away from.
+      var openDetailPid = null;
+
+      // The zero based page of the open provider's detail the modal is showing.
+      // Reset to the first page each time a provider is opened.
+      var detailPage = 0;
+
+      // How many detail rows one page holds. Enough to be a useful spot check
+      // while keeping the DOM light on the worst case monthly window.
+      var DETAIL_PAGE_SIZE = 50;
+
+      function q(id) { return document.getElementById(id); }
+      function resultsEl(view) { return q("results-" + view); }
+
+      function escapeHtml(value) {
+        return String(value == null ? "" : value)
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;");
+      }
+
+      function isoOf(d) {
+        var m = String(d.getMonth() + 1).padStart(2, "0");
+        var day = String(d.getDate()).padStart(2, "0");
+        return d.getFullYear() + "-" + m + "-" + day;
+      }
+
+      function todayISO() { return isoOf(new Date()); }
+
+      function shiftAnchor(view, iso, dir) {
+        var parts = iso.split("-");
+        var d = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
+        if (view === "month") {
+          d.setMonth(d.getMonth() + dir * PERIODS.month);
+        } else if (view === "week") {
+          d.setDate(d.getDate() + dir * PERIODS.week * 7);
+        } else {
+          d.setDate(d.getDate() + dir * PERIODS.day);
+        }
+        return isoOf(d);
+      }
+
+      function fmtDateTime(iso) {
+        var d = new Date(iso);
+        if (isNaN(d.getTime())) return iso;
+        return d.toLocaleString(undefined, {
+          month: "short",
+          day: "numeric",
+          year: "numeric",
+          hour: "numeric",
+          minute: "2-digit"
+        });
+      }
+
+      function query(view) {
+        return "view=" + encodeURIComponent(view) +
+          "&tz=" + encodeURIComponent(ZONE) +
+          "&anchor=" + encodeURIComponent(state.anchor) +
+          "&periods=" + encodeURIComponent(PERIODS[view]);
+      }
+
+      function refresh() {
+        var view = state.view;
+        var container = resultsEl(view);
+        container.innerHTML =
+          '<canvas-loader size="large" centered text="Loading ..."></canvas-loader>';
+        fetch(BASE + "/data?" + query(view))
+          .then(function (r) {
+            if (!r.ok) throw new Error("data");
+            return r.json();
+          })
+          .then(function (data) { renderCounts(view, container, data); })
+          .catch(function () { renderError(container); });
+      }
+
+      function renderError(container) {
+        container.innerHTML =
+          '<canvas-banner variant="error" header="Could not load the dashboard">' +
+          "<p>Something went wrong loading the note counts.</p>" +
+          '<canvas-button size="sm" variant="ghost" class="pnd-retry">Retry</canvas-button>' +
+          "</canvas-banner>";
+        var retry = container.querySelector(".pnd-retry");
+        if (retry) retry.addEventListener("click", refresh);
+      }
+
+      function renderCounts(view, container, data) {
+        detailCache = {};
+        lastData[view] = data;
+        updateWindowLabel(data.buckets);
+        renderProviderFilter(data.providers);
+        renderTable(view);
+      }
+
+      function updateWindowLabel(buckets) {
+        var label = "";
+        if (buckets && buckets.length) {
+          label = buckets.length === 1
+            ? buckets[0].label
+            : buckets[0].label + " to " + buckets[buckets.length - 1].label;
+        }
+        q("pnd-window-label").textContent = label;
+      }
+
+      function renderProviderFilter(providers) {
+        var slot = q("pnd-provider");
+
+        var stillExists = false;
+        for (var i = 0; i < providers.length; i++) {
+          if (providers[i].provider_id === state.provider) { stillExists = true; break; }
+        }
+        if (!stillExists) state.provider = "";
+
+        var opts = '<canvas-option value=""' +
+          (state.provider === "" ? " selected" : "") + ">All providers</canvas-option>";
+        for (var j = 0; j < providers.length; j++) {
+          var pv = providers[j];
+          opts += '<canvas-option value="' + escapeHtml(pv.provider_id) + '"' +
+            (pv.provider_id === state.provider ? " selected" : "") + ">" +
+            escapeHtml(pv.provider_name) + "</canvas-option>";
+        }
+
+        // Rebuild the combobox element outright each load. A fresh element reads
+        // its options on connect, which sidesteps the manual sync a live child
+        // mutation would need, and the current choice is preserved above.
+        slot.innerHTML = '<canvas-combobox label="Provider" placeholder="All providers">' +
+          opts + "</canvas-combobox>";
+        var combo = slot.querySelector("canvas-combobox");
+        combo.addEventListener("change", function () {
+          state.provider = combo.value || "";
+          renderTable(state.view);
+        });
+      }
+
+      function renderTable(view) {
+        var container = resultsEl(view);
+        var data = lastData[view];
+        if (!data) return;
+
+        var providers = data.providers;
+        if (state.provider) {
+          providers = providers.filter(function (p) {
+            return p.provider_id === state.provider;
+          });
+        }
+
+        if (!providers.length) {
+          container.innerHTML = emptyStateHtml();
+          wireEmptyState(container);
+          return;
+        }
+
+        container.innerHTML = countTableHtml(data.buckets, providers);
+        wireDetailButtons(container, view);
+      }
+
+      function countTableHtml(buckets, providers) {
+        var head = "<canvas-table-cell>Provider</canvas-table-cell>";
+        for (var i = 0; i < buckets.length; i++) {
+          head += "<canvas-table-cell>" + escapeHtml(buckets[i].label) + "</canvas-table-cell>";
+        }
+        head += "<canvas-table-cell>Total</canvas-table-cell>";
+        head += "<canvas-table-cell>Detail</canvas-table-cell>";
+
+        var body = "";
+        for (var p = 0; p < providers.length; p++) {
+          var row = providers[p];
+          var cells = "<canvas-table-cell bold>" +
+            escapeHtml(row.provider_name) + "</canvas-table-cell>";
+          for (var b = 0; b < buckets.length; b++) {
+            var c = row.counts[buckets[b].key] || 0;
+            var cls = c === 0 ? ' class="pnd-zero"' : "";
+            cells += "<canvas-table-cell><span" + cls + ">" + c + "</span></canvas-table-cell>";
+          }
+          cells += "<canvas-table-cell bold>" + row.total + "</canvas-table-cell>";
+          cells += '<canvas-table-cell actions>' +
+            '<canvas-button variant="ghost" size="sm" data-detail="' +
+            escapeHtml(row.provider_id) + '" data-name="' +
+            escapeHtml(row.provider_name) + '" aria-haspopup="dialog">View notes</canvas-button>' +
+            "</canvas-table-cell>";
+          body += '<canvas-table-row data-provider="' +
+            escapeHtml(row.provider_id) + '">' + cells + "</canvas-table-row>";
+        }
+
+        return '<canvas-scroll-area horizontal aria-label="Note counts per provider">' +
+          '<canvas-table compact class="pnd-count-table" aria-label="Notes written per provider">' +
+          "<canvas-table-head><canvas-table-row>" + head + "</canvas-table-row></canvas-table-head>" +
+          "<canvas-table-body>" + body + "</canvas-table-body>" +
+          "</canvas-table></canvas-scroll-area>";
+      }
+
+      function wireDetailButtons(container, view) {
+        var btns = container.querySelectorAll("[data-detail]");
+        for (var i = 0; i < btns.length; i++) {
+          (function (btn) {
+            btn.addEventListener("click", function () {
+              openDetailModal(
+                btn.getAttribute("data-detail"),
+                btn.getAttribute("data-name"),
+                view
+              );
+            });
+          })(btns[i]);
+        }
+      }
+
+      function openDetailModal(pid, name, view) {
+        q("pnd-detail-title").textContent = "Notes for " + (name || "provider");
+
+        // Remember which provider the open modal is showing, so a late detail
+        // response for a provider the user has already navigated away from never
+        // paints over the one they are looking at now. Each open starts on the
+        // first page.
+        openDetailPid = pid;
+        detailPage = 0;
+        q("pnd-detail-modal").open();
+
+        if (detailCache[pid]) {
+          renderDetailPage(pid);
+          return;
+        }
+
+        q("pnd-detail-body").innerHTML =
+          '<canvas-loader centered text="Loading ..."></canvas-loader>';
+        fetchDetail(pid, view)
+          .then(function (rows) {
+            detailCache[pid] = rows;
+            if (openDetailPid === pid) renderDetailPage(pid);
+          })
+          .catch(function () {
+            if (openDetailPid === pid) {
+              q("pnd-detail-body").innerHTML =
+                '<canvas-banner variant="error" header="Could not load the notes">' +
+                "<p>Something went wrong loading the note detail.</p></canvas-banner>";
+            }
+          });
+      }
+
+      // Paint one page of the cached rows into the modal body. Clamps the page
+      // into range first, so a stale page from a longer previous provider never
+      // points past the current set.
+      function renderDetailPage(pid) {
+        var body = q("pnd-detail-body");
+        var rows = detailCache[pid] || [];
+
+        if (!rows.length) {
+          body.innerHTML = '<p class="pnd-detail-empty">No note detail available.</p>';
+          return;
+        }
+
+        var pages = Math.ceil(rows.length / DETAIL_PAGE_SIZE);
+        if (detailPage < 0) detailPage = 0;
+        if (detailPage > pages - 1) detailPage = pages - 1;
+
+        var from = detailPage * DETAIL_PAGE_SIZE;
+        var to = Math.min(from + DETAIL_PAGE_SIZE, rows.length);
+
+        body.innerHTML =
+          detailTableHtml(rows.slice(from, to)) +
+          pagerHtml(from, to, rows.length, pages);
+        wirePager(pid);
+      }
+
+      // The pager below the table. Omitted when the whole set fits one page, so
+      // a short list looks exactly as it did before pagination.
+      function pagerHtml(from, to, total, pages) {
+        if (pages <= 1) return "";
+        var range = "Showing " + (from + 1) + " to " + to + " of " + total;
+        var prevDisabled = detailPage === 0 ? " disabled" : "";
+        var nextDisabled = detailPage >= pages - 1 ? " disabled" : "";
+        return '<div class="pnd-pager">' +
+          '<span class="pnd-pager-range">' + range + "</span>" +
+          "<canvas-button-group>" +
+          '<canvas-button id="pnd-detail-prev" size="sm" variant="ghost" aria-label="Previous page"' +
+          prevDisabled + ">" +
+          '<svg class="pnd-arrow pnd-arrow--prev" viewBox="0 0 10 6" fill="currentColor" aria-hidden="true"><path d="M1 0h8a1 1 0 01.7 1.7l-4 4a1 1 0 01-1.4 0l-4-4A1 1 0 011 0z"/></svg>' +
+          "</canvas-button>" +
+          '<canvas-button id="pnd-detail-next" size="sm" variant="ghost" aria-label="Next page"' +
+          nextDisabled + ">" +
+          '<svg class="pnd-arrow pnd-arrow--next" viewBox="0 0 10 6" fill="currentColor" aria-hidden="true"><path d="M1 0h8a1 1 0 01.7 1.7l-4 4a1 1 0 01-1.4 0l-4-4A1 1 0 011 0z"/></svg>' +
+          "</canvas-button>" +
+          "</canvas-button-group>" +
+          "</div>";
+      }
+
+      // Attach the page moves directly to the buttons, since canvas-button
+      // clicks do not cross the shadow boundary. The disabled attribute dims the
+      // ends, and these guards keep a click on a dimmed end from moving.
+      function wirePager(pid) {
+        var prev = q("pnd-detail-prev");
+        var next = q("pnd-detail-next");
+        if (prev) {
+          prev.addEventListener("click", function () {
+            if (detailPage > 0) {
+              detailPage -= 1;
+              renderDetailPage(pid);
+            }
+          });
+        }
+        if (next) {
+          next.addEventListener("click", function () {
+            var rows = detailCache[pid] || [];
+            var pages = Math.ceil(rows.length / DETAIL_PAGE_SIZE);
+            if (detailPage < pages - 1) {
+              detailPage += 1;
+              renderDetailPage(pid);
+            }
+          });
+        }
+      }
+
+      function fetchDetail(pid, view) {
+        var url = BASE + "/detail?" + query(view) +
+          "&provider_id=" + encodeURIComponent(pid);
+        return fetch(url)
+          .then(function (r) {
+            if (!r.ok) throw new Error("detail");
+            return r.json();
+          })
+          .then(function (data) { return data.rows || []; });
+      }
+
+      function detailTableHtml(rows) {
+        if (!rows.length) {
+          return '<p class="pnd-detail-empty">No note detail available.</p>';
+        }
+        var body = "";
+        for (var i = 0; i < rows.length; i++) {
+          var r = rows[i];
+          body += "<canvas-table-row>" +
+            "<canvas-table-cell bold>" +
+            escapeHtml(r.patient_name || "Unknown patient") + "</canvas-table-cell>" +
+            "<canvas-table-cell>" + escapeHtml(fmtDateTime(r.datetime_of_service)) + "</canvas-table-cell>" +
+            "<canvas-table-cell>" + codesHtml(r.codes) + "</canvas-table-cell>" +
+            "<canvas-table-cell>" + escapeHtml(r.note_type || "") + "</canvas-table-cell>" +
+            "<canvas-table-cell>" + reasonHtml(r.reason_for_visit) + "</canvas-table-cell>" +
+            "</canvas-table-row>";
+        }
+        return '<canvas-scroll-area horizontal aria-label="Note detail">' +
+          '<canvas-table compact class="pnd-detail-table" aria-label="Note detail">' +
+          "<canvas-table-head><canvas-table-row>" +
+          "<canvas-table-cell>Patient</canvas-table-cell>" +
+          "<canvas-table-cell>Time of service</canvas-table-cell>" +
+          "<canvas-table-cell>Codes charged</canvas-table-cell>" +
+          "<canvas-table-cell>Note type</canvas-table-cell>" +
+          "<canvas-table-cell>Reason for visit</canvas-table-cell>" +
+          "</canvas-table-row></canvas-table-head>" +
+          "<canvas-table-body>" + body + "</canvas-table-body></canvas-table></canvas-scroll-area>";
+      }
+
+      function codesHtml(codes) {
+        if (!codes || !codes.length) {
+          return '<span class="pnd-muted">No codes charged</span>';
+        }
+        var out = "";
+        for (var i = 0; i < codes.length; i++) {
+          out += '<div class="pnd-code"><b>' + escapeHtml(codes[i].cpt) + "</b> " +
+            '<span class="pnd-muted">' + escapeHtml(codes[i].description || "") + "</span></div>";
+        }
+        return out;
+      }
+
+      function reasonHtml(text) {
+        if (!text) return '<span class="pnd-muted">Not recorded</span>';
+        return escapeHtml(text);
+      }
+
+      function emptyStateHtml() {
+        return '<div class="pnd-empty">' +
+          "<h3>No notes in this period</h3>" +
+          "<p>No notes were written in the selected range. Try another period or view.</p>" +
+          '<canvas-button variant="ghost" class="pnd-empty-action">Go to today</canvas-button>' +
+          "</div>";
+      }
+
+      function wireEmptyState(container) {
+        var b = container.querySelector(".pnd-empty-action");
+        if (b) {
+          b.addEventListener("click", function () {
+            state.anchor = todayISO();
+            refresh();
+          });
+        }
+      }
+
+      function init() {
+        q("pnd-prev").addEventListener("click", function () {
+          state.anchor = shiftAnchor(state.view, state.anchor, -1);
+          refresh();
+        });
+        q("pnd-next").addEventListener("click", function () {
+          state.anchor = shiftAnchor(state.view, state.anchor, 1);
+          refresh();
+        });
+        q("pnd-today").addEventListener("click", function () {
+          state.anchor = todayISO();
+          refresh();
+        });
+        q("pnd-tabs").addEventListener("tab-change", function (e) {
+          var panel = e.detail && e.detail.panel;
+          var view = PANEL_VIEW[panel];
+          if (view && view !== state.view) {
+            state.view = view;
+            refresh();
+          }
+        });
+        refresh();
+      }
+
+      if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", init);
+      } else {
+        init();
+      }
+    })();
+  </script>
+</body>
+</html>
