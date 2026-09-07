@@ -1,0 +1,214 @@
+{% comment %}
+Chart membership panel. Rendered by ChartAPI's GET /chart/ route in this
+plugin's own handlers/chart_api.py, 02-spec/SPEC.md Behaviour steps 16 and
+17, this template's own ledger rows 22 and 23. Right chart pane surface, so
+the patient chart itself sits to the left and carries the identity context,
+per surface-selection.md, and the panel still names the patient because
+step 16 asks for it.
+
+Context contract. handlers/chart_api.py's _panel_context builds exactly
+this dict and is the only caller.
+
+  patient_name          "First Last"
+  price_display         MEMBERSHIP_PRICE_CENTS divided by 100, formatted to
+                         two decimal places, for example "119.00"
+  is_member             boolean, false when there is no Membership row or
+                         the row is ENDED, step 17
+  status                the raw Membership.status, "" when is_member is
+                         false
+  status_label          "Active", "Payment failed" or "Cancelling", ""
+                         when is_member is false
+  enrolled_display       "Member since" date, formatted, for example
+                         "9 Sep 2026"
+  next_payment_display   the next charge date, formatted, shown on
+                         "ACTIVE" and "PAYMENT_FAILED"
+  ends_display            the date the membership ends, formatted, shown
+                         once cancelled_by is set
+  card_display             for example "Visa ending 4242", empty when no
+                         payment method is on file
+  charges                  a list of dicts, newest first, each carrying
+                         date_display, amount_display (a plain number
+                         string), outcome_label ("Paid" or "Declined"),
+                         badge_color ("green" or "red") and reason
+  cancelled_by              "patient", "staff" or "" when never cancelled
+  cancelled_by_label        "The member" or "Staff", matching cancelled_by
+  cancelled_display         the date cancellation was requested, formatted
+  can_show_cancel            boolean, true on "ACTIVE" and "PAYMENT_FAILED"
+  can_cancel                  boolean, the three charge count
+                         membership_logic already enforces server side
+  cancel_opens_display         the projected or landed date cancellation
+                         opens, shown whenever can_cancel is false
+  patient_id                    the Canvas patient key, used only in the
+                         Cancel action's request body, never rendered
+
+No other context key is read. No route is declared here, this file is a
+template only.
+{% endcomment %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Membership</title>
+  <link href="https://fonts.googleapis.com/css?family=Lato:400,700,400italic,700italic&subset=latin" rel="stylesheet">
+  <link rel="stylesheet" href="/plugin-io/api/apex_recurring_membership_payments/chart/canvas-plugin-ui.css?v={{ cache_bust }}">
+  <script src="/plugin-io/api/apex_recurring_membership_payments/chart/canvas-plugin-ui.js?v={{ cache_bust }}"></script>
+  <style>
+    body {
+      background: var(--palette-white);
+      font-family: var(--font-family, lato, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif);
+    }
+    .panel {
+      padding: var(--space-medium);
+      padding-bottom: 120px;
+    }
+    .panel h4 {
+      margin-bottom: var(--space-small);
+    }
+    .muted-line {
+      color: var(--color-text-muted, #767676);
+      margin: 0 0 var(--space-medium);
+    }
+  </style>
+</head>
+<body>
+<div class="panel">
+  <h4>{{ patient_name }}</h4>
+
+  <canvas-banner id="page-error" variant="error" style="display: none; margin-bottom: var(--space-medium)"></canvas-banner>
+
+  <div id="app">
+    {% if not is_member %}
+      <canvas-badge color="grey" size="mini" basic>Not a member</canvas-badge>
+      <p class="muted-line" style="margin-top: var(--space-small)">Membership is {{ price_display }} dollars a month. The patient joins from the Membership page in the patient portal, where the payment details go into Pay Theory's own form.</p>
+    {% else %}
+      <canvas-inline-row style="margin-bottom: var(--space-small)">
+        {% if status == "ACTIVE" %}
+          <canvas-badge color="green" size="mini">Active member</canvas-badge>
+        {% elif status == "PAYMENT_FAILED" %}
+          <canvas-badge color="red" size="mini">Payment failed</canvas-badge>
+        {% elif status == "CANCELLING" %}
+          <canvas-badge color="orange" size="mini">Cancelled, ends {{ ends_display }}</canvas-badge>
+        {% endif %}
+        <canvas-badge color="grey" size="mini" basic>Since {{ enrolled_display }}</canvas-badge>
+      </canvas-inline-row>
+
+      {% if status == "ACTIVE" %}
+        <p class="muted-line">Next charge {{ next_payment_display }}, {{ price_display }} dollars{% if card_display %}, {{ card_display }}{% endif %}.</p>
+      {% elif status == "PAYMENT_FAILED" %}
+        <p class="muted-line">Charge of {{ charges.0.date_display }} declined{% if charges.0.reason %}, {{ charges.0.reason }}{% endif %}.{% if card_display %} {{ card_display }}.{% endif %}</p>
+      {% elif status == "CANCELLING" %}
+        <p class="muted-line">No further charges will be taken. Membership ends {{ ends_display }}.</p>
+      {% endif %}
+
+      <canvas-divider></canvas-divider>
+
+      <canvas-table compact aria-label="Membership charges for {{ patient_name }}">
+        <canvas-table-head>
+          <canvas-table-row>
+            <canvas-table-cell>Date</canvas-table-cell>
+            <canvas-table-cell>Amount</canvas-table-cell>
+            <canvas-table-cell>Outcome</canvas-table-cell>
+          </canvas-table-row>
+        </canvas-table-head>
+        <canvas-table-body id="charge-history-body">
+          {% if cancelled_by %}
+            <canvas-table-row>
+              <canvas-table-cell>{{ cancelled_display }}</canvas-table-cell>
+              <canvas-table-cell></canvas-table-cell>
+              <canvas-table-cell><canvas-badge color="orange" size="mini">{{ cancelled_by_label }} cancelled, ends {{ ends_display }}</canvas-badge></canvas-table-cell>
+            </canvas-table-row>
+          {% endif %}
+          {% for charge in charges %}
+            <canvas-table-row {% if charge.badge_color == "red" %}negative{% endif %}>
+              <canvas-table-cell>{{ charge.date_display }}</canvas-table-cell>
+              <canvas-table-cell>{{ charge.amount_display }}</canvas-table-cell>
+              <canvas-table-cell><canvas-badge color="{{ charge.badge_color }}" size="mini">{{ charge.outcome_label }}{% if charge.reason %}, {{ charge.reason }}{% endif %}</canvas-badge></canvas-table-cell>
+            </canvas-table-row>
+          {% endfor %}
+        </canvas-table-body>
+      </canvas-table>
+
+      {% if can_show_cancel %}
+        <canvas-divider></canvas-divider>
+        <canvas-inline-row>
+          <canvas-button id="cancel-btn" variant="ghost" size="sm" {% if not can_cancel %}disabled{% endif %} onclick="document.getElementById('cancel-modal').open()">Cancel membership</canvas-button>
+        </canvas-inline-row>
+        {% if not can_cancel %}
+          <p class="muted-line">Cancellation opens once the third charge has been taken, around {{ cancel_opens_display }}.</p>
+        {% endif %}
+      {% endif %}
+    {% endif %}
+  </div>
+
+  <canvas-modal id="cancel-modal" size="small" persistent>
+    <canvas-modal-header>Cancel membership</canvas-modal-header>
+    <canvas-modal-content>
+      <p>This stops future charges right away for {{ patient_name }}. The membership stays active until the paid period ends, then it ends. Nothing is refunded.</p>
+    </canvas-modal-content>
+    <canvas-modal-footer>
+      <canvas-button variant="ghost" onclick="document.getElementById('cancel-modal').dismiss()">Keep membership</canvas-button>
+      <canvas-button id="confirm-cancel-btn" variant="danger">Cancel membership</canvas-button>
+    </canvas-modal-footer>
+  </canvas-modal>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  var patientId = "{{ patient_id }}";
+
+  function showPageError(message) {
+    var banner = document.getElementById("page-error");
+    banner.textContent = message;
+    banner.style.display = "";
+  }
+
+  function refreshApp() {
+    fetch(window.location.href, { credentials: "same-origin" })
+      .then(function (response) { return response.text(); })
+      .then(function (html) {
+        var doc = new DOMParser().parseFromString(html, "text/html");
+        var next = doc.getElementById("app");
+        if (next) {
+          document.getElementById("app").innerHTML = next.innerHTML;
+        }
+      });
+  }
+
+  function handleConfirmCancel() {
+    fetch("/plugin-io/api/apex_recurring_membership_payments/chart/cancel", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ patient_id: patientId })
+    })
+      .then(function (response) {
+        return response.json().catch(function () { return {}; }).then(function (data) {
+          return { ok: response.ok, data: data };
+        });
+      })
+      .then(function (result) {
+        document.getElementById("cancel-modal").dismiss();
+        if (result.ok) {
+          refreshApp();
+        } else {
+          showPageError((result.data && result.data.error) || "The payment provider could not be reached. Nothing was changed.");
+        }
+      });
+  }
+
+  // Delegated on document rather than bound to the button directly, so a
+  // fresh confirm button coming back after refreshApp replaces #app still
+  // works with no second bind, the same reasoning the portal page's own
+  // script explains.
+  document.addEventListener("click", function (event) {
+    if (event.target.id === "confirm-cancel-btn") {
+      handleConfirmCancel();
+    }
+  });
+})();
+</script>
+</body>
+</html>

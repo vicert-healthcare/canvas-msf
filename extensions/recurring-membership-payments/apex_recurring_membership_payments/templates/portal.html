@@ -1,0 +1,424 @@
+{% comment %}
+Portal membership page. Rendered by PortalAPI's GET /portal/ route,
+02-spec/SPEC.md Behaviour steps 4, 5, 6, 10 and 40, this template's own
+ledger rows 10, 11, 12, 16 and 45.
+
+Context contract. This route (owned outside this file) must pass exactly
+these keys.
+
+  patient_key            the Canvas patient key, used only in the tokenize
+                          call's metadata, never rendered as text
+  paytheory_sdk_url      PAYTHEORY_SDK_URL, the script tag src in the head
+  paytheory_public_key   PAYTHEORY_PUBLIC_KEY, the payTheoryFields apiKey
+  csp_nonce              the same nonce value carried on the response's own
+                          Content-Security-Policy header, set on the one
+                          inline script tag below and nowhere else
+  price_display          MEMBERSHIP_PRICE_CENTS divided by 100, formatted to
+                          two decimal places as a plain string, for example
+                          "119.00", carrying no dollar sign
+  interval_code          the raw MEMBERSHIP_INTERVAL value, for example
+                          "MONTHLY", turned into a word by this template
+                          rather than by the caller
+  membership_state       one of "join", "ACTIVE", "PAYMENT_FAILED",
+                          "CANCELLING". "join" covers both no Membership row
+                          and a row whose status is ENDED, step 4's own
+                          grouping
+  payor_id               the row's payor_id, or an empty string when there
+                          is none yet, read regardless of membership_state
+                          since an ended row can still carry one
+  enrolled_display        "Member since" date, formatted for example
+                          "9 Sep 2026", empty when membership_state is
+                          "join"
+  card_display            for example "Visa ending 4242", empty when there
+                          is no payment method on file yet
+  next_payment_display    the next charge date, formatted, shown on
+                          "ACTIVE" and "PAYMENT_FAILED", empty otherwise
+  ends_display             the date the membership ends, formatted, shown
+                          on "CANCELLING", empty otherwise
+  can_cancel               boolean, the three charge count membership_logic
+                          already enforces server side
+  cancel_opens_display     the projected or landed date cancellation opens,
+                          formatted, shown whenever can_cancel is false
+  cancelled_by             "patient", "staff" or an empty string when the
+                          membership was never cancelled
+  cancelled_display        the date cancellation was requested, formatted,
+                          empty when cancelled_by is empty
+  charges                  a list of dicts, newest first, one per
+                          MembershipCharge row, each carrying date_display,
+                          amount_display (a plain number string, no dollar
+                          sign), outcome_label ("Paid" or "Declined"),
+                          badge_color ("green" or "red") and reason (the
+                          failure_reasons text, empty for a paid row). On
+                          "PAYMENT_FAILED" the newest row is the declined
+                          charge the payment method section below refers to
+
+No other context key is read. No route is declared here, this file is a
+template only.
+{% endcomment %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Membership</title>
+  <link href="https://fonts.googleapis.com/css?family=Lato:400,700,400italic,700italic&subset=latin" rel="stylesheet">
+  <link rel="stylesheet" href="/plugin-io/api/apex_recurring_membership_payments/portal/canvas-plugin-ui.css?v={{ cache_bust }}">
+  <script src="/plugin-io/api/apex_recurring_membership_payments/portal/canvas-plugin-ui.js?v={{ cache_bust }}"></script>
+  <script src="{{ paytheory_sdk_url }}"></script>
+  <style>
+    body {
+      background: var(--palette-white);
+      font-family: var(--font-family, lato, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif);
+    }
+    .membership-page {
+      padding: var(--space-huge);
+    }
+    .membership-page h2 {
+      margin-bottom: var(--space-small);
+    }
+    .field-group {
+      display: flex;
+      flex-direction: column;
+      gap: var(--space-small);
+      margin: var(--space-medium) 0;
+    }
+    .field-label {
+      display: block;
+      font-size: var(--font-size-label);
+      font-weight: var(--font-weight-bold);
+      color: var(--color-text);
+      margin-bottom: var(--space-mini);
+    }
+    .pt-field {
+      border: var(--border-width) solid var(--color-border);
+      border-radius: var(--radius);
+      background: var(--palette-white);
+      padding: var(--space-small);
+    }
+    .pt-error {
+      color: var(--palette-red);
+      font-size: var(--font-size-label);
+      margin-top: var(--space-mini);
+    }
+    .action-row {
+      margin-top: var(--space-medium);
+    }
+    .muted-line {
+      color: var(--color-text-muted);
+      margin: 0 0 var(--space-medium);
+    }
+    .history-block {
+      margin-top: var(--space-large);
+    }
+  </style>
+</head>
+<body>
+<div class="membership-page">
+  <h2>Practice membership</h2>
+
+  <canvas-banner id="page-error" variant="error" style="display: none; margin-bottom: var(--space-medium)"></canvas-banner>
+
+  <div id="app">
+    {% if membership_state == "join" %}
+      <p class="muted-line">
+        {{ price_display }} dollars a
+        {% if interval_code == "WEEKLY" %}week{% elif interval_code == "BI_WEEKLY" %}two weeks{% elif interval_code == "QUARTERLY" %}3 months{% elif interval_code == "BI_ANNUAL" %}6 months{% elif interval_code == "ANNUAL" %}year{% else %}month{% endif %},
+        charged today and on this day every
+        {% if interval_code == "WEEKLY" %}week{% elif interval_code == "BI_WEEKLY" %}two weeks{% elif interval_code == "QUARTERLY" %}3 months{% elif interval_code == "BI_ANNUAL" %}6 months{% elif interval_code == "ANNUAL" %}year{% else %}month{% endif %}
+        after until you cancel. Cancellation opens once the third charge has been taken.
+      </p>
+
+      <div class="field-group">
+        <div>
+          <label class="field-label" for="pay-theory-credit-card-number">Number</label>
+          <div id="pay-theory-credit-card-number" class="pt-field"></div>
+        </div>
+        <canvas-inline-row>
+          <div style="flex: 1 0 160px">
+            <label class="field-label" for="pay-theory-credit-card-exp">Expiry</label>
+            <div id="pay-theory-credit-card-exp" class="pt-field"></div>
+          </div>
+          <div style="flex: 1 0 160px">
+            <label class="field-label" for="pay-theory-credit-card-cvv">Security code</label>
+            <div id="pay-theory-credit-card-cvv" class="pt-field"></div>
+          </div>
+        </canvas-inline-row>
+        <p id="pt-error" class="pt-error" role="alert" aria-live="polite" style="display: none"></p>
+      </div>
+
+      <canvas-checkbox id="consent-checkbox" label="I agree to being charged {{ price_display }} dollars every {% if interval_code == "WEEKLY" %}week{% elif interval_code == "BI_WEEKLY" %}two weeks{% elif interval_code == "QUARTERLY" %}3 months{% elif interval_code == "BI_ANNUAL" %}6 months{% elif interval_code == "ANNUAL" %}year{% else %}month{% endif %} until I cancel"></canvas-checkbox>
+
+      <div class="action-row">
+        <canvas-button id="join-btn" variant="primary" disabled>Join and pay {{ price_display }}</canvas-button>
+      </div>
+    {% else %}
+      <canvas-inline-row style="margin-bottom: var(--space-small)">
+        {% if membership_state == "ACTIVE" %}
+          <canvas-badge color="green" size="mini">Active</canvas-badge>
+        {% elif membership_state == "PAYMENT_FAILED" %}
+          <canvas-badge color="red" size="mini">Payment failed</canvas-badge>
+        {% elif membership_state == "CANCELLING" %}
+          <canvas-badge color="orange" size="mini">Cancelled, ends {{ ends_display }}</canvas-badge>
+        {% endif %}
+        <canvas-badge color="grey" size="mini" basic>Member since {{ enrolled_display }}</canvas-badge>
+      </canvas-inline-row>
+
+      {% if membership_state == "ACTIVE" %}
+        <p class="muted-line">Next charge {{ next_payment_display }}, {{ price_display }} dollars{% if card_display %}, {{ card_display }}{% endif %}.</p>
+      {% elif membership_state == "PAYMENT_FAILED" %}
+        <p class="muted-line">Your charge of {{ charges.0.date_display }} for {{ charges.0.amount_display }} dollars was declined{% if charges.0.reason %}, {{ charges.0.reason }}{% endif %}.{% if card_display %} {{ card_display }}.{% endif %}</p>
+      {% elif membership_state == "CANCELLING" %}
+        <p class="muted-line">No further charges will be taken. Your membership runs until {{ ends_display }}.</p>
+      {% endif %}
+
+      <div class="history-block">
+        <canvas-table compact aria-label="Your membership charges">
+          <canvas-table-head>
+            <canvas-table-row>
+              <canvas-table-cell>Date</canvas-table-cell>
+              <canvas-table-cell>Amount</canvas-table-cell>
+              <canvas-table-cell>Outcome</canvas-table-cell>
+            </canvas-table-row>
+          </canvas-table-head>
+          <canvas-table-body id="charge-history-body">
+            {% if cancelled_by %}
+              <canvas-table-row>
+                <canvas-table-cell>{{ cancelled_display }}</canvas-table-cell>
+                <canvas-table-cell></canvas-table-cell>
+                <canvas-table-cell><canvas-badge color="orange" size="mini">Cancelled, ends {{ ends_display }}</canvas-badge></canvas-table-cell>
+              </canvas-table-row>
+            {% endif %}
+            {% for charge in charges %}
+              <canvas-table-row {% if charge.badge_color == "red" %}negative{% endif %}>
+                <canvas-table-cell>{{ charge.date_display }}</canvas-table-cell>
+                <canvas-table-cell>{{ charge.amount_display }}</canvas-table-cell>
+                <canvas-table-cell><canvas-badge color="{{ charge.badge_color }}" size="mini">{{ charge.outcome_label }}{% if charge.reason %}, {{ charge.reason }}{% endif %}</canvas-badge></canvas-table-cell>
+              </canvas-table-row>
+            {% endfor %}
+          </canvas-table-body>
+        </canvas-table>
+      </div>
+
+      {% if membership_state == "ACTIVE" or membership_state == "PAYMENT_FAILED" %}
+        <canvas-divider></canvas-divider>
+        <canvas-inline-row>
+          <canvas-button id="cancel-btn" variant="ghost" {% if not can_cancel %}disabled{% endif %} onclick="document.getElementById('cancel-modal').open()">Cancel membership</canvas-button>
+        </canvas-inline-row>
+        {% if not can_cancel %}
+          <p class="muted-line">Cancellation opens once your third charge has been taken, around {{ cancel_opens_display }}.</p>
+        {% endif %}
+      {% endif %}
+
+      {% if membership_state == "PAYMENT_FAILED" %}
+        <canvas-divider></canvas-divider>
+        <p class="muted-line">Enter new payment details below. The missed charge is collected with them and your membership continues on them.</p>
+
+        <div class="field-group">
+          <div>
+            <label class="field-label" for="pay-theory-credit-card-number">Number</label>
+            <div id="pay-theory-credit-card-number" class="pt-field"></div>
+          </div>
+          <canvas-inline-row>
+            <div style="flex: 1 0 160px">
+              <label class="field-label" for="pay-theory-credit-card-exp">Expiry</label>
+              <div id="pay-theory-credit-card-exp" class="pt-field"></div>
+            </div>
+            <div style="flex: 1 0 160px">
+              <label class="field-label" for="pay-theory-credit-card-cvv">Security code</label>
+              <div id="pay-theory-credit-card-cvv" class="pt-field"></div>
+            </div>
+          </canvas-inline-row>
+          <p id="pt-error" class="pt-error" role="alert" aria-live="polite" style="display: none"></p>
+        </div>
+
+        <div class="action-row">
+          <canvas-button id="save-pay-btn" variant="primary" disabled>Save and pay {{ charges.0.amount_display }}</canvas-button>
+        </div>
+      {% endif %}
+    {% endif %}
+  </div>
+
+  <canvas-modal id="cancel-modal" size="small" persistent>
+    <canvas-modal-header>Cancel membership</canvas-modal-header>
+    <canvas-modal-content>
+      <p>This stops future charges right away. The membership stays active until the paid period ends, then it ends. Nothing is refunded.</p>
+    </canvas-modal-content>
+    <canvas-modal-footer>
+      <canvas-button variant="ghost" onclick="document.getElementById('cancel-modal').dismiss()">Keep membership</canvas-button>
+      <canvas-button id="confirm-cancel-btn" variant="danger">Cancel membership</canvas-button>
+    </canvas-modal-footer>
+  </canvas-modal>
+</div>
+
+<script nonce="{{ csp_nonce }}">
+(function () {
+  "use strict";
+
+  var patientKey = "{{ patient_key }}";
+  var payorId = "{{ payor_id }}";
+
+  function showPageError(message) {
+    var banner = document.getElementById("page-error");
+    banner.textContent = message;
+    banner.style.display = "";
+  }
+
+  function hidePageError() {
+    var banner = document.getElementById("page-error");
+    banner.style.display = "none";
+  }
+
+  function refreshApp() {
+    fetch(window.location.href, { credentials: "same-origin" })
+      .then(function (response) { return response.text(); })
+      .then(function (html) {
+        var doc = new DOMParser().parseFromString(html, "text/html");
+        var next = doc.getElementById("app");
+        if (next) {
+          document.getElementById("app").innerHTML = next.innerHTML;
+        }
+        // The refreshed markup is a fresh set of nodes, so a Pay Theory
+        // mount belonging to the old ones is gone. Every click handler
+        // below is bound once on document through delegation rather than
+        // on these nodes directly, which is what lets a button that comes
+        // back after a refresh keep working with no second bind.
+        mountPayTheoryFields();
+      });
+  }
+
+  function mountPayTheoryFields() {
+    if (!document.getElementById("pay-theory-credit-card-number") || !window.paytheory) {
+      return;
+    }
+    paytheory.readyObserver(function () {
+      var joinBtn = document.getElementById("join-btn");
+      var savePayBtn = document.getElementById("save-pay-btn");
+      if (joinBtn) {
+        joinBtn.removeAttribute("disabled");
+      }
+      if (savePayBtn) {
+        savePayBtn.removeAttribute("disabled");
+      }
+    });
+    paytheory.errorObserver(function (message) {
+      var errorEl = document.getElementById("pt-error");
+      if (errorEl) {
+        errorEl.textContent = message;
+        errorEl.style.display = "";
+      }
+    });
+    paytheory.payTheoryFields({
+      apiKey: "{{ paytheory_public_key }}",
+      metadata: { canvas_patient_id: patientKey }
+    });
+  }
+
+  function tokenize(onTokenized) {
+    var params = { metadata: { canvas_patient_id: patientKey } };
+    if (payorId) {
+      params.payorId = payorId;
+    }
+    paytheory.tokenizePaymentMethod(params).then(function (result) {
+      if (result && result.type === "TOKENIZED") {
+        onTokenized(result.body);
+      } else {
+        var errorEl = document.getElementById("pt-error");
+        if (errorEl) {
+          errorEl.textContent = (result && result.body && result.body.error) || "That payment method could not be used. Check the details and try again.";
+          errorEl.style.display = "";
+        }
+      }
+    });
+  }
+
+  function postJson(url, payload) {
+    return fetch(url, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    }).then(function (response) {
+      return response.json().catch(function () { return {}; }).then(function (data) {
+        return { ok: response.ok, data: data };
+      });
+    });
+  }
+
+  function handleJoin() {
+    var consentBox = document.getElementById("consent-checkbox");
+    if (!consentBox || !consentBox.checked) {
+      return;
+    }
+    hidePageError();
+    tokenize(function (body) {
+      postJson("/plugin-io/api/apex_recurring_membership_payments/portal/join", {
+        consent: true,
+        payment_method_id: body.payment_method_id,
+        payor_id: body.payor_id,
+        last_four: body.last_four,
+        brand: body.brand
+      }).then(function (result) {
+        if (result.ok) {
+          refreshApp();
+        } else {
+          showPageError((result.data && result.data.error) || "The membership could not be started. Nothing was charged. Try again in a moment.");
+        }
+      });
+    });
+  }
+
+  function handleSavePay() {
+    hidePageError();
+    tokenize(function (body) {
+      postJson("/plugin-io/api/apex_recurring_membership_payments/portal/payment-method", {
+        payment_method_id: body.payment_method_id,
+        payor_id: body.payor_id,
+        last_four: body.last_four,
+        brand: body.brand
+      }).then(function (result) {
+        if (result.ok) {
+          refreshApp();
+        } else {
+          showPageError((result.data && result.data.error) || "The payment method could not be saved. Try again in a moment.");
+        }
+      });
+    });
+  }
+
+  function handleConfirmCancel() {
+    hidePageError();
+    postJson("/plugin-io/api/apex_recurring_membership_payments/portal/cancel", {}).then(function (result) {
+      document.getElementById("cancel-modal").dismiss();
+      if (result.ok) {
+        refreshApp();
+      } else {
+        showPageError((result.data && result.data.error) || "The payment provider could not be reached. Nothing was changed.");
+      }
+    });
+  }
+
+  // One delegated listener on the document rather than one bound to each
+  // button, because Join, Save and pay and the cancel confirmation can all
+  // reappear inside a fresh set of nodes after refreshApp replaces #app,
+  // and a listener bound to the node refreshApp just removed would never
+  // fire again.
+  document.addEventListener("click", function (event) {
+    var target = event.target;
+    if (target.id === "join-btn") {
+      handleJoin();
+    } else if (target.id === "save-pay-btn") {
+      handleSavePay();
+    } else if (target.id === "confirm-cancel-btn") {
+      handleConfirmCancel();
+    }
+  });
+
+  if (window.paytheory) {
+    mountPayTheoryFields();
+  } else {
+    document.addEventListener("DOMContentLoaded", mountPayTheoryFields);
+  }
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100" height="100" role="img" aria-label="Recurring membership payments">
+  <rect x="0" y="0" width="100" height="100" rx="18" fill="#1B4965"/>
+  <rect x="18" y="30" width="64" height="42" rx="6" fill="#FFFFFF"/>
+  <rect x="18" y="39" width="64" height="8" fill="#1B4965"/>
+  <rect x="26" y="56" width="20" height="5" rx="2.5" fill="#1B4965"/>
+  <rect x="52" y="56" width="12" height="5" rx="2.5" fill="#9BB8CC"/>
+  <path d="M70 22 A20 20 0 1 1 50 6" fill="none" stroke="#5FA8D3" stroke-width="7" stroke-linecap="round"/>
+  <path d="M62 22 L72 22 L72 12" fill="none" stroke="#5FA8D3" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

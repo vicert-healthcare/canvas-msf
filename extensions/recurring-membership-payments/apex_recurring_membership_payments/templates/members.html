@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Members</title>
+  <link href="https://fonts.googleapis.com/css?family=Lato:400,700,400italic,700italic&subset=latin" rel="stylesheet">
+  <link rel="stylesheet" href="/plugin-io/api/apex_recurring_membership_payments/members/canvas-plugin-ui.css?v={{ cache_bust }}">
+  <script src="/plugin-io/api/apex_recurring_membership_payments/members/canvas-plugin-ui.js?v={{ cache_bust }}"></script>
+  <style>
+    /* Plugin specific layout only. Every value below is a design system token. */
+    body {
+      background: var(--palette-white, #ffffff);
+      font-family: var(--font-family, lato, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif);
+    }
+    .page {
+      padding: var(--space-huge);
+      max-width: 1100px;
+      margin: 0 auto;
+    }
+    .page-header {
+      margin-bottom: var(--space-large);
+    }
+    .filter-card {
+      margin-bottom: var(--space-large);
+    }
+    .result-count {
+      margin: 0 0 var(--space-small);
+      color: var(--color-text-muted, #767676);
+      font-size: .92857143em;
+    }
+    .empty-state {
+      padding: var(--space-huge);
+      text-align: center;
+    }
+    .pagination {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: var(--space-small);
+      margin-top: var(--space-medium);
+    }
+    .open-chart-cell {
+      display: flex;
+      align-items: center;
+      gap: var(--space-small);
+      justify-content: flex-end;
+    }
+    .fallback-link {
+      display: inline-flex;
+      align-items: center;
+      gap: var(--space-mini);
+      color: var(--color-text-muted, #767676);
+      font-size: .85714286em;
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <div class="page-header">
+      <h1>Members</h1>
+    </div>
+
+    <canvas-banner id="open-chart-error" variant="error" header="Could not open the chart" style="display: none; margin-bottom: var(--space-medium)"></canvas-banner>
+
+    <canvas-card class="filter-card">
+      <canvas-card-body>
+        <form method="get" action="">
+          <canvas-inline-row>
+            <canvas-input label="Search" name="q" placeholder="Patient name" value="{{ q }}"></canvas-input>
+            <canvas-dropdown label="Status" name="status">
+              <canvas-option value="" {% if not status %}selected{% endif %}>All</canvas-option>
+              <canvas-option value="ACTIVE" {% if status == "ACTIVE" %}selected{% endif %}>Active</canvas-option>
+              <canvas-option value="PAYMENT_FAILED" {% if status == "PAYMENT_FAILED" %}selected{% endif %}>Payment failed</canvas-option>
+              <canvas-option value="CANCELLING" {% if status == "CANCELLING" %}selected{% endif %}>Cancelled</canvas-option>
+              <canvas-option value="ENDED" {% if status == "ENDED" %}selected{% endif %}>Ended</canvas-option>
+              <canvas-option value="DECLINED" {% if status == "DECLINED" %}selected{% endif %}>Declined charge</canvas-option>
+            </canvas-dropdown>
+            <canvas-button type="submit">Search</canvas-button>
+          </canvas-inline-row>
+        </form>
+      </canvas-card-body>
+    </canvas-card>
+
+    {% if rows %}
+      <p class="result-count">{{ total }} member{{ total|pluralize }}</p>
+      <canvas-card>
+        <canvas-card-body no-padding>
+          <canvas-table striped aria-label="Members">
+            <canvas-table-head>
+              <canvas-table-row>
+                <canvas-table-cell>Name</canvas-table-cell>
+                <canvas-table-cell>Status</canvas-table-cell>
+                <canvas-table-cell>Next payment</canvas-table-cell>
+                <canvas-table-cell>Amount</canvas-table-cell>
+                <canvas-table-cell>Last charge</canvas-table-cell>
+                <canvas-table-cell>Payment method</canvas-table-cell>
+                <canvas-table-cell></canvas-table-cell>
+              </canvas-table-row>
+            </canvas-table-head>
+            <canvas-table-body>
+              {% for row in rows %}
+                <canvas-table-row>
+                  <canvas-table-cell bold>{{ row.first_name }} {{ row.last_name }}</canvas-table-cell>
+                  <canvas-table-cell>
+                    {% if row.status == "ACTIVE" %}
+                      <canvas-badge color="green" size="mini">{{ row.status_label }}</canvas-badge>
+                    {% elif row.status == "PAYMENT_FAILED" %}
+                      <canvas-badge color="red" size="mini">{{ row.status_label }}</canvas-badge>
+                    {% elif row.status == "CANCELLING" %}
+                      <canvas-badge color="blue" size="mini">{{ row.status_label }}</canvas-badge>
+                    {% else %}
+                      <canvas-badge color="grey" size="mini">{{ row.status_label }}</canvas-badge>
+                    {% endif %}
+                  </canvas-table-cell>
+                  <canvas-table-cell>{{ row.next_payment_date }}</canvas-table-cell>
+                  <canvas-table-cell>{{ row.amount }}</canvas-table-cell>
+                  <canvas-table-cell>
+                    {% if row.charge_outcome %}
+                      {{ row.charge_date }}
+                      {% if row.charge_outcome == "SUCCESS" %}
+                        <canvas-badge color="green" size="mini">Success</canvas-badge>
+                      {% else %}
+                        <canvas-badge color="red" size="mini">Declined</canvas-badge>
+                      {% endif %}
+                    {% else %}
+                      No charges yet
+                    {% endif %}
+                  </canvas-table-cell>
+                  <canvas-table-cell>{{ row.payment_method|default:"-" }}</canvas-table-cell>
+                  <canvas-table-cell actions>
+                    <div class="open-chart-cell">
+                      <form class="open-chart-form" data-patient-key="{{ row.patient_key }}">
+                        <canvas-button type="submit" size="sm">Open chart</canvas-button>
+                      </form>
+                      <a class="fallback-link" href="/patient/{{ row.patient_key }}" target="_blank" rel="noopener">
+                        New tab
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                          <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
+                          <polyline points="15 3 21 3 21 9"/>
+                          <line x1="10" y1="14" x2="21" y2="3"/>
+                        </svg>
+                      </a>
+                    </div>
+                  </canvas-table-cell>
+                </canvas-table-row>
+              {% endfor %}
+            </canvas-table-body>
+          </canvas-table>
+        </canvas-card-body>
+      </canvas-card>
+
+      {% if total > page_size %}
+        <div class="pagination">
+          {% if page > 1 %}
+            <a href="?q={{ q|urlencode }}&amp;status={{ status|urlencode }}&amp;page={{ page|add:"-1" }}">Previous</a>
+          {% endif %}
+          <span>Page {{ page }}</span>
+          {% if rows|length == page_size %}
+            <a href="?q={{ q|urlencode }}&amp;status={{ status|urlencode }}&amp;page={{ page|add:"1" }}">Next</a>
+          {% endif %}
+        </div>
+      {% endif %}
+    {% else %}
+      <canvas-card>
+        <canvas-card-body>
+          <div class="empty-state">
+            <h3 style="margin: 0 0 var(--space-small); font-weight: 700">No members match</h3>
+            {% if q or status %}
+              <p style="margin: 0 0 var(--space-medium); color: var(--color-text-muted, #767676)">No membership matches this search and filter.</p>
+              <a href="?">Clear filters</a>
+            {% endif %}
+          </div>
+        </canvas-card-body>
+      </canvas-card>
+    {% endif %}
+  </div>
+
+  <script>
+    (function () {
+      var errorBanner = document.getElementById('open-chart-error');
+
+      document.addEventListener('submit', function (event) {
+        var form = event.target;
+        if (!form.classList || !form.classList.contains('open-chart-form')) {
+          return;
+        }
+        event.preventDefault();
+        errorBanner.style.display = 'none';
+        var patientKey = form.getAttribute('data-patient-key');
+        var button = form.querySelector('canvas-button');
+        if (button) {
+          button.setAttribute('disabled', '');
+        }
+        fetch('/plugin-io/api/apex_recurring_membership_payments/members/open-chart', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ patient_key: patientKey })
+        }).then(function (response) {
+          if (!response.ok) {
+            throw new Error('open chart failed');
+          }
+          // The navigation itself arrives through the RedirectEffect the
+          // route returns, delivered to the acting user out of band, so
+          // nothing here reads the response body or moves the page.
+          if (button) {
+            button.removeAttribute('disabled');
+          }
+        }).catch(function () {
+          errorBanner.style.display = '';
+          if (button) {
+            button.removeAttribute('disabled');
+          }
+        });
+      });
+    })();
+  </script>
+</body>
+</html>
