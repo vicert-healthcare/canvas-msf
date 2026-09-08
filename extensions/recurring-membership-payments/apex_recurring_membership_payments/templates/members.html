@@ -9,20 +9,74 @@
   <script src="/plugin-io/api/apex_recurring_membership_payments/members/canvas-plugin-ui.js?v={{ cache_bust }}"></script>
   <style>
     /* Plugin specific layout only. Every value below is a design system token. */
+    html, body {
+      height: 100%;
+    }
     body {
+      margin: 0;
       background: var(--palette-white, #ffffff);
       font-family: var(--font-family, lato, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif);
+      /* The document never grows past one viewport, the page container
+         below scrolls in its place. Both dialogs at the end of this body
+         position their backdrop fixed, which inside an iframe resolves
+         against the iframe viewport, so if the host sizes the frame to
+         content a dialog opened from a low row would centre far above
+         the visible band while this overflow hidden locks scrolling. This
+         cap makes the frame viewport and the visible band the same thing. */
+      overflow: hidden;
     }
     .page {
+      height: 100%;
+      overflow-y: auto;
+      box-sizing: border-box;
       padding: var(--space-huge);
-      max-width: 1100px;
-      margin: 0 auto;
     }
     .page-header {
       margin-bottom: var(--space-large);
     }
-    .filter-card {
-      margin-bottom: var(--space-large);
+    /* No card. component-usage.md's Inline Form Rows names this shape the
+       search bar use case, whose own text reads no card wrapper, lives in a
+       page header region or toolbar area. The 12px is DESIGN.md's Stacked
+       Blocks rule, a control row sitting above the block it governs, and it
+       also clears the Glued Blocks anti pattern. */
+    .filter-bar {
+      margin-bottom: var(--space-small);
+    }
+    /* Grows with the row and stops at 500px. canvas-inline-row gives a
+       slotted canvas-input flex 1 0 160px, and max-width clamps the grown
+       size without cancelling the grow, so overriding flex would only cost
+       the wrap behaviour the component exists to guarantee. */
+    #search-input {
+      max-width: 500px;
+    }
+    /* canvas-dropdown is a locked component with no width token, and its
+       panel is anchored left -1px and right -1px to the trigger, so the host
+       width is the panel width. Measured on the instance, inline-role natural
+       sized the host to 71px because the trigger only says All, and every
+       option ellipsised. 220px renders all six untruncated with slack. */
+    #status-filter {
+      width: 220px;
+    }
+    /* No frame around the results at all. The card went first, then the
+       border and radius that replaced its edges, so the table sits on bare
+       white the way DESIGN.md's Plugin Background describes a page with a
+       table. canvas-table draws 2px under the header cells and 1px under
+       every body row, and those rules are the whole of the table's
+       structure now. Wrapping, growth and alignment are declared on the
+       table itself in templates/_members_rows.html through the nowrap,
+       grow and numeric attributes, rather than as a rule written here, so
+       the history dialog's own charge history table is free to make its
+       own declaration with nothing to override. */
+    /* The sm button's own horizontal padding, 1.125em against its
+       .92857143rem font size, both read off the component's tokens rather
+       than measured off the screen. The link carries the same inset a button
+       carries, so the distance from the chart link to the history button now
+       matches the distance between the two buttons beside it, and the gap
+       between those two is untouched. The phrase the link itself reads is
+       deliberately not repeated here, because AC20 counts that string in
+       the rendered page and a comment carrying it would inflate the count. */
+    .row-actions a {
+      padding-inline: calc(1.125 * var(--canvas-button-font-size-sm, .92857143rem));
     }
     .result-count {
       margin: 0 0 var(--space-small);
@@ -40,18 +94,17 @@
       gap: var(--space-small);
       margin-top: var(--space-medium);
     }
-    .open-chart-cell {
+    .row-actions {
       display: flex;
       align-items: center;
-      gap: var(--space-small);
       justify-content: flex-end;
-    }
-    .fallback-link {
-      display: inline-flex;
-      align-items: center;
       gap: var(--space-mini);
-      color: var(--color-text-muted, #767676);
-      font-size: .85714286em;
+    }
+    /* Reserves the loader's height so the dialog does not open short and jump
+       when the rows land. --canvas-loader-min-height is the token
+       web-components.md documents on canvas-loader for exactly this. */
+    #history-loader canvas-loader {
+      --canvas-loader-min-height: calc(var(--space-huge) * 8);
     }
   </style>
 </head>
@@ -61,157 +114,278 @@
       <h1>Members</h1>
     </div>
 
-    <canvas-banner id="open-chart-error" variant="error" header="Could not open the chart" style="display: none; margin-bottom: var(--space-medium)"></canvas-banner>
+    <canvas-banner id="page-error" variant="error" style="display: none; margin-bottom: var(--space-medium)"></canvas-banner>
 
-    <canvas-card class="filter-card">
-      <canvas-card-body>
-        <form method="get" action="">
-          <canvas-inline-row>
-            <canvas-input label="Search" name="q" placeholder="Patient name" value="{{ q }}"></canvas-input>
-            <canvas-dropdown label="Status" name="status">
+    <form method="get" action="" id="filter-form">
+      <canvas-inline-row class="filter-bar">
+        <canvas-input label="Search" name="q" id="search-input" placeholder="Patient name" value="{{ q }}"></canvas-input>
+        <canvas-dropdown label="Status" name="status" id="status-filter" inline-role="natural" style="width: 220px">
               <canvas-option value="" {% if not status %}selected{% endif %}>All</canvas-option>
               <canvas-option value="ACTIVE" {% if status == "ACTIVE" %}selected{% endif %}>Active</canvas-option>
               <canvas-option value="PAYMENT_FAILED" {% if status == "PAYMENT_FAILED" %}selected{% endif %}>Payment failed</canvas-option>
               <canvas-option value="CANCELLING" {% if status == "CANCELLING" %}selected{% endif %}>Cancelled</canvas-option>
               <canvas-option value="ENDED" {% if status == "ENDED" %}selected{% endif %}>Ended</canvas-option>
               <canvas-option value="DECLINED" {% if status == "DECLINED" %}selected{% endif %}>Declined charge</canvas-option>
-            </canvas-dropdown>
-            <canvas-button type="submit">Search</canvas-button>
-          </canvas-inline-row>
-        </form>
-      </canvas-card-body>
-    </canvas-card>
+        </canvas-dropdown>
+      </canvas-inline-row>
+    </form>
 
-    {% if rows %}
-      <p class="result-count">{{ total }} member{{ total|pluralize }}</p>
-      <canvas-card>
-        <canvas-card-body no-padding>
-          <canvas-table striped aria-label="Members">
-            <canvas-table-head>
-              <canvas-table-row>
-                <canvas-table-cell>Name</canvas-table-cell>
-                <canvas-table-cell>Status</canvas-table-cell>
-                <canvas-table-cell>Next payment</canvas-table-cell>
-                <canvas-table-cell>Amount</canvas-table-cell>
-                <canvas-table-cell>Last charge</canvas-table-cell>
-                <canvas-table-cell>Payment method</canvas-table-cell>
-                <canvas-table-cell></canvas-table-cell>
-              </canvas-table-row>
-            </canvas-table-head>
-            <canvas-table-body>
-              {% for row in rows %}
-                <canvas-table-row>
-                  <canvas-table-cell bold>{{ row.first_name }} {{ row.last_name }}</canvas-table-cell>
-                  <canvas-table-cell>
-                    {% if row.status == "ACTIVE" %}
-                      <canvas-badge color="green" size="mini">{{ row.status_label }}</canvas-badge>
-                    {% elif row.status == "PAYMENT_FAILED" %}
-                      <canvas-badge color="red" size="mini">{{ row.status_label }}</canvas-badge>
-                    {% elif row.status == "CANCELLING" %}
-                      <canvas-badge color="blue" size="mini">{{ row.status_label }}</canvas-badge>
-                    {% else %}
-                      <canvas-badge color="grey" size="mini">{{ row.status_label }}</canvas-badge>
-                    {% endif %}
-                  </canvas-table-cell>
-                  <canvas-table-cell>{{ row.next_payment_date }}</canvas-table-cell>
-                  <canvas-table-cell>{{ row.amount }}</canvas-table-cell>
-                  <canvas-table-cell>
-                    {% if row.charge_outcome %}
-                      {{ row.charge_date }}
-                      {% if row.charge_outcome == "SUCCESS" %}
-                        <canvas-badge color="green" size="mini">Success</canvas-badge>
-                      {% else %}
-                        <canvas-badge color="red" size="mini">Declined</canvas-badge>
-                      {% endif %}
-                    {% else %}
-                      No charges yet
-                    {% endif %}
-                  </canvas-table-cell>
-                  <canvas-table-cell>{{ row.payment_method|default:"-" }}</canvas-table-cell>
-                  <canvas-table-cell actions>
-                    <div class="open-chart-cell">
-                      <form class="open-chart-form" data-patient-key="{{ row.patient_key }}">
-                        <canvas-button type="submit" size="sm">Open chart</canvas-button>
-                      </form>
-                      <a class="fallback-link" href="/patient/{{ row.patient_key }}" target="_blank" rel="noopener">
-                        New tab
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                          <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
-                          <polyline points="15 3 21 3 21 9"/>
-                          <line x1="10" y1="14" x2="21" y2="3"/>
-                        </svg>
-                      </a>
-                    </div>
-                  </canvas-table-cell>
-                </canvas-table-row>
-              {% endfor %}
-            </canvas-table-body>
-          </canvas-table>
-        </canvas-card-body>
-      </canvas-card>
-
-      {% if total > page_size %}
-        <div class="pagination">
-          {% if page > 1 %}
-            <a href="?q={{ q|urlencode }}&amp;status={{ status|urlencode }}&amp;page={{ page|add:"-1" }}">Previous</a>
-          {% endif %}
-          <span>Page {{ page }}</span>
-          {% if rows|length == page_size %}
-            <a href="?q={{ q|urlencode }}&amp;status={{ status|urlencode }}&amp;page={{ page|add:"1" }}">Next</a>
-          {% endif %}
-        </div>
-      {% endif %}
-    {% else %}
-      <canvas-card>
-        <canvas-card-body>
-          <div class="empty-state">
-            <h3 style="margin: 0 0 var(--space-small); font-weight: 700">No members match</h3>
-            {% if q or status %}
-              <p style="margin: 0 0 var(--space-medium); color: var(--color-text-muted, #767676)">No membership matches this search and filter.</p>
-              <a href="?">Clear filters</a>
-            {% endif %}
-          </div>
-        </canvas-card-body>
-      </canvas-card>
-    {% endif %}
+    <div id="results" aria-live="polite">
+      {% include "templates/_members_rows.html" %}
+    </div>
   </div>
+
+  <canvas-modal id="history-modal" size="medium">
+    <canvas-modal-header id="history-modal-header">Membership history</canvas-modal-header>
+    <canvas-modal-content>
+      <div id="history-loader">
+        <canvas-loader size="large" centered text="Loading ..."></canvas-loader>
+      </div>
+      <canvas-banner id="history-error" variant="error" style="display: none"></canvas-banner>
+      <div id="history-body"></div>
+    </canvas-modal-content>
+    <canvas-modal-footer>
+      <canvas-button variant="ghost" data-action="close-history">Close</canvas-button>
+    </canvas-modal-footer>
+  </canvas-modal>
+
+  <!-- persistent is deliberately absent here. The iframe risk noted above
+       means a dialog that refuses Escape could become a hard lock with no
+       way out if the host sizes the frame to content, and that has not
+       been confirmed in a browser yet. Escape closing a confirmation is
+       safe and ordinary, so this stays dismissable until frame sizing is
+       confirmed on a real instance. -->
+  <canvas-modal id="cancel-modal" size="small">
+    <canvas-modal-header>Cancel membership</canvas-modal-header>
+    <canvas-modal-content>
+      <p>This stops future charges right away for <b id="cancel-member-name"></b>. The membership stays active until the paid period ends, then it ends. Nothing is refunded.</p>
+    </canvas-modal-content>
+    <canvas-modal-footer>
+      <canvas-button variant="ghost" data-action="dismiss-cancel">Keep membership</canvas-button>
+      <canvas-button variant="danger" data-action="confirm-cancel">Cancel membership</canvas-button>
+    </canvas-modal-footer>
+  </canvas-modal>
 
   <script>
     (function () {
-      var errorBanner = document.getElementById('open-chart-error');
+      "use strict";
 
-      document.addEventListener('submit', function (event) {
-        var form = event.target;
-        if (!form.classList || !form.classList.contains('open-chart-form')) {
+      // 200 milliseconds, borrowed. component-usage.md names this as the
+      // one debounce interval the Canvas home app shares rather than one
+      // of the several literals its own consumers used to hand roll, but
+      // it names it for canvas-combobox and canvas-multi-select's remote
+      // search rather than for a hand rolled debounce like this one. It
+      // is still the right number to borrow here, short enough to feel
+      // immediate while collapsing a typed word into one request, and
+      // below 150 it would send a request per keystroke.
+      var DEBOUNCE_MS = 200;
+
+      var searchInput = document.getElementById("search-input");
+      var statusFilter = document.getElementById("status-filter");
+      var filterForm = document.getElementById("filter-form");
+      var resultsEl = document.getElementById("results");
+      var pageBanner = document.getElementById("page-error");
+
+      var historyModal = document.getElementById("history-modal");
+      var historyHeader = document.getElementById("history-modal-header");
+      var historyLoader = document.getElementById("history-loader");
+      var historyError = document.getElementById("history-error");
+      var historyBody = document.getElementById("history-body");
+
+      var cancelModal = document.getElementById("cancel-modal");
+      var cancelMemberName = document.getElementById("cancel-member-name");
+
+      var currentPage = {{ page|default:1 }};
+      var activeCancelKey = null;
+      var rowsToken = 0;
+      var historyToken = 0;
+      var debounceTimer = null;
+
+      function showBanner(title, description) {
+        pageBanner.setAttribute("header", title);
+        pageBanner.textContent = description;
+        pageBanner.style.display = "";
+      }
+
+      function hideBanner() {
+        pageBanner.style.display = "none";
+        pageBanner.removeAttribute("header");
+        pageBanner.textContent = "";
+      }
+
+      function fetchRows(page) {
+        var token = ++rowsToken;
+        // Read the current search parameters and only change q, status
+        // and page, so a v parameter or anything else already on the
+        // address bar rides along untouched rather than being rebuilt
+        // from scratch.
+        var params = new URLSearchParams(window.location.search);
+        params.set("q", searchInput.value);
+        params.set("status", statusFilter.value);
+        params.set("page", String(page));
+
+        hideBanner();
+
+        fetch("/plugin-io/api/apex_recurring_membership_payments/members/rows?" + params.toString(), {
+          credentials: "same-origin"
+        })
+          .then(function (response) {
+            if (!response.ok) {
+              throw new Error("rows fetch failed");
+            }
+            return response.text();
+          })
+          .then(function (html) {
+            if (token !== rowsToken) {
+              // A later keystroke already invalidated this one, so what
+              // is on screen either answers the current query or is
+              // nothing at all, never a stale answer to a question the
+              // user has moved on from.
+              return;
+            }
+            resultsEl.innerHTML = html;
+            currentPage = page;
+            history.replaceState(null, "", window.location.pathname + "?" + params.toString());
+          })
+          .catch(function () {
+            if (token !== rowsToken) {
+              return;
+            }
+            showBanner("Could not load members", "Check the connection and try again.");
+          });
+      }
+
+      searchInput.addEventListener("input", function () {
+        window.clearTimeout(debounceTimer);
+        debounceTimer = window.setTimeout(function () {
+          fetchRows(1);
+        }, DEBOUNCE_MS);
+      });
+
+      statusFilter.addEventListener("change", function () {
+        fetchRows(1);
+      });
+
+      filterForm.addEventListener("submit", function (event) {
+        // A session with no JavaScript still submits this form as an
+        // ordinary GET, so the form element and its name attributes stay.
+        // With JavaScript running, typing already reacts on its own and
+        // pressing Enter should not reload the page.
+        event.preventDefault();
+      });
+
+      function setHistoryState(state) {
+        historyLoader.style.display = state === "loading" ? "" : "none";
+        historyError.style.display = state === "error" ? "" : "none";
+      }
+
+      function openHistory(patientKey, memberName) {
+        var token = ++historyToken;
+        historyHeader.textContent = "Membership history for " + memberName;
+        historyBody.innerHTML = "";
+        setHistoryState("loading");
+        // The component captures this button as the trigger and returns
+        // focus to it on dismiss with no code of ours, which is why open()
+        // runs synchronously here, before the fetch below ever starts.
+        historyModal.open();
+
+        fetch("/plugin-io/api/apex_recurring_membership_payments/members/history/" + encodeURIComponent(patientKey), {
+          credentials: "same-origin"
+        })
+          .then(function (response) {
+            if (!response.ok) {
+              throw new Error("history fetch failed");
+            }
+            return response.text();
+          })
+          .then(function (html) {
+            if (token !== historyToken) {
+              return;
+            }
+            historyBody.innerHTML = html;
+            setHistoryState("content");
+          })
+          .catch(function () {
+            if (token !== historyToken) {
+              return;
+            }
+            historyError.textContent = "Could not load this member's history. Check the connection and try again.";
+            setHistoryState("error");
+          });
+      }
+
+      function openCancel(patientKey, memberName) {
+        activeCancelKey = patientKey;
+        cancelMemberName.textContent = memberName;
+        cancelModal.open();
+      }
+
+      function confirmCancel() {
+        var patientKey = activeCancelKey;
+        if (!patientKey) {
           return;
         }
-        event.preventDefault();
-        errorBanner.style.display = 'none';
-        var patientKey = form.getAttribute('data-patient-key');
-        var button = form.querySelector('canvas-button');
-        if (button) {
-          button.setAttribute('disabled', '');
-        }
-        fetch('/plugin-io/api/apex_recurring_membership_payments/members/open-chart', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+        fetch("/plugin-io/api/apex_recurring_membership_payments/members/cancel", {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ patient_key: patientKey })
-        }).then(function (response) {
-          if (!response.ok) {
-            throw new Error('open chart failed');
-          }
-          // The navigation itself arrives through the RedirectEffect the
-          // route returns, delivered to the acting user out of band, so
-          // nothing here reads the response body or moves the page.
-          if (button) {
-            button.removeAttribute('disabled');
-          }
-        }).catch(function () {
-          errorBanner.style.display = '';
-          if (button) {
-            button.removeAttribute('disabled');
-          }
-        });
+        })
+          .then(function (response) {
+            return response.json().catch(function () { return {}; }).then(function (data) {
+              return { ok: response.ok, data: data };
+            });
+          })
+          .then(function (result) {
+            cancelModal.dismiss();
+            if (result.ok) {
+              // The row that opened this dialog is about to be destroyed
+              // once the rows swap lands, so focus moves to the search
+              // field first, before that swap, rather than falling to the
+              // body, which is never allowed. The status badge changing
+              // is the confirmation, so no success banner follows.
+              searchInput.focus();
+              fetchRows(currentPage);
+            } else {
+              showBanner("Could not cancel membership", (result.data && result.data.error) || "The payment provider could not be reached. Nothing was changed.");
+            }
+          })
+          .catch(function () {
+            cancelModal.dismiss();
+            searchInput.focus();
+            showBanner("Could not cancel membership", "Check the connection and try again.");
+          });
+      }
+
+      // Delegated on document rather than bound per row, so a freshly
+      // swapped results region needs no rebinding, and one dialog is
+      // retargeted from whichever row's data attributes it was opened
+      // from.
+      document.addEventListener("click", function (event) {
+        var target = event.target;
+
+        if (target.classList && target.classList.contains("page-link")) {
+          event.preventDefault();
+          fetchRows(parseInt(target.getAttribute("data-page"), 10));
+          return;
+        }
+
+        var action = target.getAttribute && target.getAttribute("data-action");
+        if (!action) {
+          return;
+        }
+
+        if (action === "view-history") {
+          openHistory(target.getAttribute("data-patient-key"), target.getAttribute("data-member-name"));
+        } else if (action === "cancel-membership") {
+          openCancel(target.getAttribute("data-patient-key"), target.getAttribute("data-member-name"));
+        } else if (action === "dismiss-cancel") {
+          cancelModal.dismiss();
+        } else if (action === "confirm-cancel") {
+          confirmCancel();
+        } else if (action === "close-history") {
+          historyModal.dismiss();
+        }
       });
     })();
   </script>

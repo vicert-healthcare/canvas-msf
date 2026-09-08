@@ -48,7 +48,7 @@
             },
             {
                 "class": "apex_recurring_membership_payments.handlers.members_api:MembersAPI",
-                "description": "Serves the members page, its search and filter, and the open chart action, staff session only."
+                "description": "Serves the members page, its search and filter, the view history modal and the staff cancel action, staff session only."
             },
             {
                 "class": "apex_recurring_membership_payments.handlers.webhook_api:WebhookAPI",
@@ -70,7 +70,6 @@
         {"name": "FAILURE_TASK_ASSIGNEE_ID"},
         {"name": "FAILURE_TASK_TEAM_ID"},
         {"name": "CANVAS_PUBLIC_URL"},
-        {"name": "REDIRECT_ALLOWLIST_INTERNAL", "default": "/patient"},
         {"name": "PAYTHEORY_API_KEY", "sensitive": true},
         {"name": "PAYTHEORY_MERCHANT_ID"},
         {"name": "PAYTHEORY_PARTNER", "default": "canvas"},

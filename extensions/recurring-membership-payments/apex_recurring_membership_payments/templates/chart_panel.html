@@ -103,31 +103,7 @@ template only.
 
       <canvas-divider></canvas-divider>
 
-      <canvas-table compact aria-label="Membership charges for {{ patient_name }}">
-        <canvas-table-head>
-          <canvas-table-row>
-            <canvas-table-cell>Date</canvas-table-cell>
-            <canvas-table-cell>Amount</canvas-table-cell>
-            <canvas-table-cell>Outcome</canvas-table-cell>
-          </canvas-table-row>
-        </canvas-table-head>
-        <canvas-table-body id="charge-history-body">
-          {% if cancelled_by %}
-            <canvas-table-row>
-              <canvas-table-cell>{{ cancelled_display }}</canvas-table-cell>
-              <canvas-table-cell></canvas-table-cell>
-              <canvas-table-cell><canvas-badge color="orange" size="mini">{{ cancelled_by_label }} cancelled, ends {{ ends_display }}</canvas-badge></canvas-table-cell>
-            </canvas-table-row>
-          {% endif %}
-          {% for charge in charges %}
-            <canvas-table-row {% if charge.badge_color == "red" %}negative{% endif %}>
-              <canvas-table-cell>{{ charge.date_display }}</canvas-table-cell>
-              <canvas-table-cell>{{ charge.amount_display }}</canvas-table-cell>
-              <canvas-table-cell><canvas-badge color="{{ charge.badge_color }}" size="mini">{{ charge.outcome_label }}{% if charge.reason %}, {{ charge.reason }}{% endif %}</canvas-badge></canvas-table-cell>
-            </canvas-table-row>
-          {% endfor %}
-        </canvas-table-body>
-      </canvas-table>
+      {% include "templates/_charge_history.html" %}
 
       {% if can_show_cancel %}
         <canvas-divider></canvas-divider>

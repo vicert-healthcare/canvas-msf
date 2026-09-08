@@ -1,4 +1,4 @@
-"""The state transitions and the effect builders shared by every handler and the cron.
+"""The state transitions, the effect builders and the charge history shared by every handler and the cron.
 
 Splitting this module out of the handlers is what lets the join route, the
 webhook route, the payment method route and the daily health check apply the
@@ -13,11 +13,18 @@ failed or a recovered charge is told to the front desk and to the member
 through a task, a comment, a banner and a message, never through the
 Canvas ledger. Reaching for one of those four here, however small, is the one
 thing this file was written to avoid.
+
+This module now also carries one network call. cancel_membership reaches Pay
+Theory to cancel a subscription, the single exception to every other
+function here computing a pure transition or an effect with no request and
+no event of its own.
 """
 
 from datetime import datetime, timedelta, timezone
 from dateutil.relativedelta import relativedelta
 from uuid import uuid4
+
+from django.db.models import Count
 
 from canvas_sdk.effects.banner_alert.add_banner_alert import AddBannerAlert
 from canvas_sdk.effects.banner_alert.remove_banner_alert import RemoveBannerAlert
@@ -25,6 +32,11 @@ from canvas_sdk.effects.note.message import Message
 from canvas_sdk.effects.task.task import AddTask, AddTaskComment, TaskStatus, UpdateTask
 from canvas_sdk.v1.data.staff import Staff
 
+from apex_recurring_membership_payments.logic.paytheory import (
+    PayTheoryError,
+    cancel_recurring_payment,
+)
+from apex_recurring_membership_payments.models.membership import Membership, MembershipStatus
 from apex_recurring_membership_payments.models.membership_charge import (
     ChargeOutcome,
     MembershipCharge,
@@ -40,6 +52,34 @@ PAYMENT_FAILED_BANNER_KEY = "membership-payment-failed"
 # enforce, never an elapsed day.
 CHARGES_BEFORE_CANCEL = 3
 
+# The two statuses a membership has to be in before either a patient or
+# staff may cancel it, read by every surface that decides whether a cancel
+# control shows at all, the chart panel, the portal page and the members
+# page row, and by cancel_membership itself before it reaches the provider.
+CANCEL_ELIGIBLE_STATUSES = (MembershipStatus.ACTIVE, MembershipStatus.PAYMENT_FAILED)
+
+# The label a chart or a members page reader sees for who cancelled a
+# membership, patient facing text never shows cancelled_by at all so this
+# stays a staff facing mapping alone.
+CANCELLED_BY_LABELS = {
+    "patient": "The member",
+    "staff": "Staff",
+}
+
+# The three ways cancel_membership can refuse, in the order the checks run.
+CANCEL_NOT_ELIGIBLE = "not_eligible"
+CANCEL_TOO_EARLY = "too_early"
+CANCEL_PROVIDER_UNREACHABLE = "provider_unreachable"
+
+# The sentence each refusal shows, verbatim against what the chart and the
+# portal routes already said before cancel_membership existed, so a caller
+# reads CANCEL_MESSAGES[reason] rather than restating any of these itself.
+CANCEL_MESSAGES = {
+    CANCEL_NOT_ELIGIBLE: "This membership cannot be cancelled.",
+    CANCEL_TOO_EARLY: "Cancellation opens once the third charge has been taken.",
+    CANCEL_PROVIDER_UNREACHABLE: "The payment provider could not be reached. Nothing was changed.",
+}
+
 _INTERVAL_DAYS = {
     "WEEKLY": 7,
     "BI_WEEKLY": 14,
@@ -51,10 +91,55 @@ _INTERVAL_MONTHS = {
     "ANNUAL": 12,
 }
 
+_ISO_DATE_PATTERNS = ("%Y-%m-%d", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%S%z")
+
 
 def format_amount(cents: int) -> str:
     """Format an integer cent amount as a dollar string, for a task comment or a banner."""
     return f"${cents / 100:,.2f}"
+
+
+def format_charge_amount(cents: int) -> str:
+    """Format an integer cent amount as a plain number string, for example 119.00, for a charge row.
+
+    A charge row's own markup carries the currency sign as a fixed character
+    beside the figure, so this leaves it off, unlike format_amount above
+    which is written straight into a sentence and needs one.
+    """
+    return f"{cents / 100:,.2f}"
+
+
+def format_iso_date(value: str) -> str:
+    """Format an ISO date or timestamp string in the design system form, for example Mar 24, 2026.
+
+    DESIGN.md states that form and forbids a numeric month, so this is the
+    one date formatter every table and every panel reads on now, in place of
+    the day first form some of these handlers used to render on their own.
+    Blank when there is no value, and the raw value unchanged when none of
+    the three patterns above parse it, since Pay Theory's own delivered date
+    shapes are Documented rather than Read, and a value that surprises us is
+    more useful shown as delivered than dropped. Built through the parsed
+    day, month and year fields rather than through a platform specific
+    strftime directive, since a leading zero suppressor for the day is not
+    available the same way on every platform.
+    """
+    if not value:
+        return ""
+    for pattern in _ISO_DATE_PATTERNS:
+        try:
+            parsed = datetime.strptime(value, pattern)
+        except ValueError:
+            continue
+        return f"{parsed.strftime('%b')} {parsed.day}, {parsed.year}"
+    return value
+
+
+def format_epoch(value: int) -> str:
+    """Format epoch seconds in the design system form, for example Mar 24, 2026, blank when there is none."""
+    if not value:
+        return ""
+    parsed = datetime.fromtimestamp(value, tz=timezone.utc)
+    return f"{parsed.strftime('%b')} {parsed.day}, {parsed.year}"
 
 
 def format_enrolled_date(enrolled_at: int) -> str:
@@ -86,6 +171,33 @@ def successful_charge_count(membership) -> int:
     ).count()
 
 
+def success_count_by_recurring_id(recurring_ids: list[str]) -> dict[str, int]:
+    """Count successful MembershipCharge rows per recurring id, in one grouped query.
+
+    Built for the members page, which has to decide whether Cancel is
+    enabled on every row of a page at once rather than running can_cancel's
+    own query once per row. Safe to key on recurring_id here, unlike
+    charge_rows below, because Cancel only ever shows on ACTIVE and
+    PAYMENT_FAILED, CANCEL_ELIGIBLE_STATUSES, and a membership in either of
+    those two statuses always still carries a recurring_id, it only goes
+    empty once a membership ends, step 34.
+    """
+    if not recurring_ids:
+        return {}
+    counts: dict[str, int] = {}
+    grouped = (
+        MembershipCharge.objects.filter(
+            recurring_id__in=recurring_ids,
+            outcome=ChargeOutcome.SUCCESS,
+        )
+        .values("recurring_id")
+        .annotate(count=Count("recurring_id"))
+    )
+    for row in grouped:
+        counts[row["recurring_id"]] = row["count"]
+    return counts
+
+
 def can_cancel(membership) -> bool:
     """Whether the membership has taken enough successful charges to be cancelled.
 
@@ -112,6 +224,124 @@ def cancellation_opens_on(membership) -> str:
         return charges[CHARGES_BEFORE_CANCEL - 1].transaction_date
     charges_owed = CHARGES_BEFORE_CANCEL - len(charges)
     return _advance_date(membership.next_payment_date, membership.payment_interval, charges_owed)
+
+
+def charge_rows(patient_key: str) -> list[dict[str, str]]:
+    """Every MembershipCharge row a patient has ever produced, newest first.
+
+    Reads on patient_key rather than on recurring_id on purpose. A
+    membership's recurring_id goes empty once the membership ends, step 34,
+    health_check.py line 306 is the line that clears it, so a read keyed on
+    recurring_id returns nothing at all for a former member. The members
+    page lists ended members and offers an Ended filter, so the history
+    modal is the first surface that shows one, and a silently empty history
+    for a former member is exactly what this function exists to avoid.
+    Keying on patient_key keeps a former member's history reachable across
+    that boundary. The one side effect worth naming is that the chart panel,
+    which now calls this through charge_history_context below, shows every
+    charge a patient has ever produced, including one from an earlier,
+    separately joined membership, rather than only the current
+    subscription's own charges. That is the intended reading, a patient's
+    history belongs to the patient rather than to whichever subscription
+    happens to be current.
+    """
+    rows = []
+    for charge in MembershipCharge.objects.filter(patient_key=patient_key).order_by(
+        "-received_at"
+    ):
+        is_success = charge.outcome == ChargeOutcome.SUCCESS
+        rows.append(
+            {
+                "date_display": format_iso_date(charge.transaction_date),
+                "amount_display": format_charge_amount(charge.amount_cents),
+                "outcome_label": "Paid" if is_success else "Declined",
+                "badge_color": "green" if is_success else "red",
+                "reason": "" if is_success else charge.failure_reasons,
+            }
+        )
+    return rows
+
+
+def charge_history_context(
+    membership, *, patient_name: str, history_label: str = ""
+) -> dict:
+    """Build the six keys templates/_charge_history.html reads, shared by the chart panel and the members history surfaces.
+
+    history_label, patient_name, charges, cancelled_by, cancelled_by_label,
+    cancelled_display and ends_display, in that order, are the whole of the
+    contract. history_label is the table's accessible name and it defaults to
+    naming the patient, which is what both staff surfaces want. The portal
+    passes its own, because a patient reading their own page is not told
+    their own name back. Passing
+    membership as None returns the six keys empty aside from patient_name,
+    which the chart panel already relies on for an ended membership it
+    chooses to treat as absent, and which the members history route never
+    reaches since a missing membership answers 404 before this is called.
+    The cancellation trail keys come straight off the membership, exactly as
+    the chart panel already read them before this function existed.
+    """
+    context: dict = {
+        "history_label": history_label or f"Membership charges for {patient_name}",
+        "patient_name": patient_name,
+        "charges": [],
+        "cancelled_by": "",
+        "cancelled_by_label": "",
+        "cancelled_display": "",
+        "ends_display": "",
+    }
+    if membership is None:
+        return context
+
+    context["charges"] = charge_rows(membership.patient_key)
+    context["ends_display"] = format_iso_date(membership.ends_at)
+
+    if membership.cancelled_at:
+        context["cancelled_by"] = membership.cancelled_by
+        context["cancelled_by_label"] = CANCELLED_BY_LABELS.get(
+            membership.cancelled_by, membership.cancelled_by
+        )
+        context["cancelled_display"] = format_epoch(membership.cancelled_at)
+
+    return context
+
+
+def cancel_membership(secrets: dict, *, patient_key: str, cancelled_by: str) -> str:
+    """Cancel one patient's membership, patient or staff initiated, empty string on success or a reason code otherwise.
+
+    Runs the checks in the order the chart route has always run them, the
+    status check, then can_cancel, then the provider call, then the write,
+    and the ordering is the whole point. Pay Theory is reached only once
+    both the status check and can_cancel have passed, so a request that
+    could never succeed never reaches the provider at all, and when the
+    provider cannot be reached this writes nothing, the membership is left
+    exactly as it was. cancelled_by is passed through rather than decided
+    here, staff from the chart and the members page, patient from the
+    portal, so this function carries no opinion about which surface called
+    it.
+    """
+    membership = Membership.objects.filter(patient_key=patient_key).first()
+    if membership is None or membership.status not in CANCEL_ELIGIBLE_STATUSES:
+        return CANCEL_NOT_ELIGIBLE
+    if not can_cancel(membership):
+        return CANCEL_TOO_EARLY
+
+    try:
+        cancelled = cancel_recurring_payment(secrets, recurring_id=membership.recurring_id)
+    except PayTheoryError:
+        cancelled = False
+
+    if not cancelled:
+        return CANCEL_PROVIDER_UNREACHABLE
+
+    now = int(datetime.now(timezone.utc).timestamp())
+    membership.status = MembershipStatus.CANCELLING
+    membership.cancelled_at = now
+    membership.cancelled_by = cancelled_by
+    membership.ends_at = membership.next_payment_date
+    membership.updated_at = now
+    membership.save()
+
+    return ""
 
 
 def member_banner_effect(*, patient_key: str, enrolled_at: int) -> AddBannerAlert:

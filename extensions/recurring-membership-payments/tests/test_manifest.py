@@ -19,9 +19,9 @@ def _manifest() -> dict:
     return json.loads(_MANIFEST_PATH.read_text())
 
 
-def test_manifest_declares_portal_page_scopes_namespace_and_allowlist():
+def test_manifest_declares_portal_page_scopes_namespace_and_no_redirect_allowlist():
     """Covers criterion: AC16
-    Covers scenario: AC16, the manifest declares the plugin's own portal page, three application scopes, the namespace and the redirect allowlist
+    Covers scenario: AC16, the manifest declares the plugin's own portal page, three application scopes and the namespace, and carries no redirect allowlist
     """
     manifest = _manifest()
 
@@ -42,4 +42,4 @@ def test_manifest_declares_portal_page_scopes_namespace_and_allowlist():
     assert scopes == {"portal_menu_item", "patient_specific", "provider_menu_item"}
 
     variables_by_name = {variable["name"]: variable for variable in manifest["variables"]}
-    assert variables_by_name["REDIRECT_ALLOWLIST_INTERNAL"]["default"] == "/patient"
+    assert "REDIRECT_ALLOWLIST_INTERNAL" not in variables_by_name

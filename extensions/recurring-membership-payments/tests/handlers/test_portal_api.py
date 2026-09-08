@@ -6,7 +6,10 @@ authentication mixin itself carries no criterion of its own here, patient_key
 always arrives through the canvas-logged-in-user-id header the way
 PatientSessionAuthMixin already guarantees, and every route trusts that header
 alone. Pay Theory itself is always a test double, patched at the point
-portal_api imported the function, never the real GraphQL client.
+each function was imported, never the real GraphQL client. create_recurring_payment
+and update_recurring_payment are patched on portal_api, which imports them
+directly, while cancel_recurring_payment is patched on membership_logic,
+which is where the shared cancel_membership function calls it from.
 """
 
 import json
@@ -16,6 +19,7 @@ from unittest.mock import patch
 import pytest
 
 from apex_recurring_membership_payments.handlers import portal_api
+from apex_recurring_membership_payments.logic import membership_logic
 from apex_recurring_membership_payments.logic.paytheory import PayTheoryError
 from apex_recurring_membership_payments.models.membership import Membership, MembershipStatus
 from apex_recurring_membership_payments.models.membership_charge import MembershipCharge
@@ -224,7 +228,7 @@ def test_cancelling_inside_lock_in_is_refused_and_button_disabled():
         enrolled_at=days_ago(30),
     )
 
-    with patch.object(portal_api, "cancel_recurring_payment") as mock_cancel:
+    with patch.object(membership_logic, "cancel_recurring_payment") as mock_cancel:
         cancel_api = _api("POST", "/portal/cancel")
         cancel_api.request = DummyRequest(headers={"canvas-logged-in-user-id": patient.id})
         cancel_result = cancel_api.cancel()
@@ -258,7 +262,7 @@ def test_cancelling_after_lock_in_stops_subscription_with_no_chart_banner():
     )
     make_successful_charges(membership, 3)
 
-    with patch.object(portal_api, "cancel_recurring_payment", return_value=True):
+    with patch.object(membership_logic, "cancel_recurring_payment", return_value=True):
         api = _api("POST", "/portal/cancel")
         api.request = DummyRequest(headers={"canvas-logged-in-user-id": patient.id})
         result = api.cancel()

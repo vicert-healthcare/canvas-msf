@@ -127,3 +127,15 @@ canvas-sortable-list {
   pointer-events: none;
   box-sizing: border-box;
 }
+
+/* Table cell ceiling.
+   A value kept on one line by the table's nowrap attribute still has a width
+   past which it wraps and breaks, rather than pushing every column after it out
+   of reach. 320px is what the home app's own largest capped cell uses, and it
+   sits under the narrowest plugin surface so one value cannot force a sideways
+   scroll by itself. Declared here so a plugin can raise it for a wide page
+   surface, in px, since the component compares it against a measurement. */
+
+canvas-table {
+  --canvas-table-cell-max: 320px;
+}

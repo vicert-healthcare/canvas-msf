@@ -20,7 +20,8 @@ in the staff left menu.
   staff cancel action.
 - A staff member opens the Members entry in the left menu, which serves the
   searchable, filterable list of every membership, and can search, filter
-  by status, or open a member's chart from a row.
+  by status, open a member's chart in a new tab, view a member's charge
+  history in a modal, or cancel a membership from a row.
 - Pay Theory delivers a webhook on every charge outcome, success or decline,
   to this plugin's own webhook route.
 - A daily scheduled task keeps the webhook registration active, reconciles
@@ -37,7 +38,6 @@ in the staff left menu.
 - Creates a front desk task, with an instruction comment, when a charge
   fails.
 - Sends the member a portal message when a charge fails.
-- Redirects a staff member to a patient's chart from the members page.
 
 ## Configuration
 
@@ -49,7 +49,6 @@ webhook secret are sensitive values.
 - `FAILURE_TASK_ASSIGNEE_ID`, who a failed charge task is assigned to
 - `FAILURE_TASK_TEAM_ID`, which team a failed charge task is assigned to
 - `CANVAS_PUBLIC_URL`, this instance's own public address
-- `REDIRECT_ALLOWLIST_INTERNAL`, the allowed prefix for the chart redirect
 - `PAYTHEORY_API_KEY`, sensitive
 - `PAYTHEORY_MERCHANT_ID`
 - `PAYTHEORY_PARTNER`

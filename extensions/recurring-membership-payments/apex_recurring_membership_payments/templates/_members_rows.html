@@ -1,0 +1,164 @@
+{% comment %}
+Members results fragment. Rendered by MembersAPI's GET / route for the
+whole page and by GET /rows for the results region alone, so this file
+is the only place the row markup exists and the two routes can never
+drift apart. Included by templates/members.html inside its own results
+div, and swapped back into that same div by the page script on every
+search, filter and page change.
+
+Context contract. The route builds exactly this dict and is the only
+caller.
+
+  rows        a list of dicts, one per member, each carrying patient_key,
+              first_name, last_name, status, status_label,
+              next_payment_date, amount, charge_date, charge_outcome,
+              card_brand, card_last_four, can_show_cancel and can_cancel
+  q           the search text currently applied, "" when none
+  status      the status filter currently applied, "" when none
+  total       the total row count across every page for this search and
+              filter, not just the page shown
+  page        the page number currently shown, one based
+  page_size   the number of rows a full page carries, fifty
+
+No other context key is read. No route is declared here, this file is a
+template only.
+{% endcomment %}
+{% if rows %}
+  <p class="result-count">{{ total }} member{{ total|pluralize }}</p>
+    {% comment %}
+    Horizontal scroll for a viewport too narrow to hold seven columns that
+    no longer wrap. canvas-scroll-area is the one sanctioned way to opt into
+    scrolling, component-usage.md Scroll Areas, and it needs a name of its
+    own because it takes tabindex 0 and role region the moment a direction
+    is set. No min-width on the table, because the nowrap attribute below
+    already makes the table's min-content wider than a narrow container,
+    which is the same guarantee a min-width would buy and one that tracks
+    the real content instead of a number somebody picked.
+
+    striped earns its place here because page_size shows up to fifty rows
+    at once, well past the roughly fifteen row threshold tables.md sets for
+    banding to help a reader keep their place, and the shared charge history
+    table carries it too so the plugin reads one way rather than two,
+    tables.md Plain By Default, Striped and Celled Earn Their Way In.
+
+    grow nominates Payment method, the sixth of the seven columns counting
+    the actions cell, as the one that absorbs whatever width the other six
+    do not need, replacing the width attribute a header cell used to carry
+    for the same job. numeric right aligns and tabular figures the Amount
+    column, the fifth.
+    {% endcomment %}
+    <canvas-scroll-area horizontal aria-label="Members table">
+    <canvas-table striped nowrap grow="6" numeric="5" aria-label="Members">
+        <canvas-table-head>
+          <canvas-table-row>
+            <canvas-table-cell bold>Name</canvas-table-cell>
+            <canvas-table-cell>Status</canvas-table-cell>
+            <canvas-table-cell>Last charge</canvas-table-cell>
+            <canvas-table-cell>Next payment</canvas-table-cell>
+            <canvas-table-cell>Amount</canvas-table-cell>
+            <canvas-table-cell>Payment method</canvas-table-cell>
+            <canvas-table-cell actions></canvas-table-cell>
+          </canvas-table-row>
+        </canvas-table-head>
+        <canvas-table-body>
+          {% for row in rows %}
+            <canvas-table-row>
+              <canvas-table-cell bold>{{ row.first_name }} {{ row.last_name }}</canvas-table-cell>
+              <canvas-table-cell>
+                {% if row.status == "ACTIVE" %}
+                  <canvas-badge color="green" size="mini">{{ row.status_label }}</canvas-badge>
+                {% elif row.status == "PAYMENT_FAILED" %}
+                  <canvas-badge color="red" size="mini">{{ row.status_label }}</canvas-badge>
+                {% elif row.status == "CANCELLING" %}
+                  <canvas-badge color="blue" size="mini">{{ row.status_label }}</canvas-badge>
+                {% else %}
+                  <canvas-badge color="grey" size="mini">{{ row.status_label }}</canvas-badge>
+                {% endif %}
+              </canvas-table-cell>
+              <canvas-table-cell>
+                {% if row.charge_outcome %}
+                  {% if row.charge_outcome == "SUCCESS" %}
+                    {{ row.charge_date }}
+                  {% else %}
+                    {{ row.charge_date }}, Declined
+                  {% endif %}
+                {% else %}
+                  No charges yet
+                {% endif %}
+              </canvas-table-cell>
+              <canvas-table-cell>{{ row.next_payment_date }}</canvas-table-cell>
+              <canvas-table-cell>{{ row.amount }}</canvas-table-cell>
+              <canvas-table-cell>
+                {% if row.card_last_four %}
+                  <span style="display: inline-flex; align-items: center; gap: var(--space-mini)">
+                    <svg width="24" height="16" viewBox="0 0 24 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="color: var(--color-text-muted, #767676); flex: none">
+                      <rect x="0.75" y="0.75" width="22.5" height="14.5" rx="2"></rect>
+                      <line x1="0.75" y1="4.75" x2="23.25" y2="4.75"></line>
+                      <rect x="2.5" y="9.5" width="5" height="2.5" rx="0.5"></rect>
+                    </svg>
+                    {{ row.card_brand }}
+                    {% comment %}
+                    The four digits are the one fact in this cell a reader
+                    must not misread, since the brand alone identifies
+                    nothing when somebody holds two cards from the same
+                    issuer. So the number is bold and back at full text
+                    colour while the words around it stay muted and
+                    regular, one emphasised span in the sentence rather
+                    than a bolded phrase.
+                    {% endcomment %}
+                    <span style="color: var(--color-text-muted, #767676)">ending in <b style="color: var(--color-text, rgba(0, 0, 0, .87))">{{ row.card_last_four }}</b></span>
+                  </span>
+                {% else %}
+                  -
+                {% endif %}
+              </canvas-table-cell>
+              <canvas-table-cell actions>
+                <div class="row-actions">
+                  <a href="/patient/{{ row.patient_key }}" target="_blank" rel="noopener" style="display: inline-flex; align-items: center; gap: var(--space-mini)">
+                    Open in chart
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                      <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
+                      <polyline points="15 3 21 3 21 9"/>
+                      <line x1="10" y1="14" x2="21" y2="3"/>
+                    </svg>
+                  </a>
+                  <canvas-button variant="ghost" size="sm" data-action="view-history" data-patient-key="{{ row.patient_key }}" data-member-name="{{ row.first_name }} {{ row.last_name }}">View history</canvas-button>
+                  {% comment %}
+                  Always rendered and disabled rather than hidden where it does
+                  not apply, because a row missing one control pulls the whole
+                  cluster right and the column stops scanning as a column. The
+                  one condition is can_cancel, which is already false both for
+                  a membership no longer eligible at all and for one still
+                  short of the third successful charge. title carries the
+                  reason, since a row has no space for the explanation line
+                  the chart panel prints under its own disabled button.
+                  {% endcomment %}
+                  <canvas-button variant="ghost" size="sm" data-action="cancel-membership" data-patient-key="{{ row.patient_key }}" data-member-name="{{ row.first_name }} {{ row.last_name }}"{% if not row.can_cancel %} disabled title="{{ row.cancel_blocked_reason }}"{% endif %}>Cancel membership</canvas-button>
+                </div>
+              </canvas-table-cell>
+            </canvas-table-row>
+          {% endfor %}
+        </canvas-table-body>
+    </canvas-table>
+    </canvas-scroll-area>
+
+  {% if total > page_size %}
+    <div class="pagination">
+      {% if page > 1 %}
+        <a href="?q={{ q|urlencode }}&amp;status={{ status|urlencode }}&amp;page={{ page|add:"-1" }}" class="page-link" data-page="{{ page|add:"-1" }}">Previous</a>
+      {% endif %}
+      <span>Page {{ page }}</span>
+      {% if rows|length == page_size %}
+        <a href="?q={{ q|urlencode }}&amp;status={{ status|urlencode }}&amp;page={{ page|add:"1" }}" class="page-link" data-page="{{ page|add:"1" }}">Next</a>
+      {% endif %}
+    </div>
+  {% endif %}
+{% else %}
+    <div class="empty-state">
+        <h3 style="margin: 0 0 var(--space-small); font-weight: 700">No members match</h3>
+        {% if q or status %}
+          <p style="margin: 0 0 var(--space-medium); color: var(--color-text-muted, #767676)">No membership matches this search and filter.</p>
+          <a href="?">Clear filters</a>
+        {% endif %}
+    </div>
+{% endif %}

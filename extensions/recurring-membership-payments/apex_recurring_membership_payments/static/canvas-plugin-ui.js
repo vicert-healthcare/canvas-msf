@@ -7474,7 +7474,8 @@
 
   class CanvasTable extends HTMLElement {
     static get observedAttributes() {
-      return ['compact', 'celled', 'selectable', 'sticky', 'striped'];
+      return ['compact', 'celled', 'selectable', 'sticky', 'striped',
+              'nowrap', 'grow', 'numeric', 'wrap'];
     }
 
     constructor() {
@@ -7508,10 +7509,54 @@
     connectedCallback() {
       if (!this.hasAttribute('role')) this.setAttribute('role', 'table');
       this._applyVariants();
+
+      /* A cell measured before Lato arrives is measured in the fallback face,
+         which is a different width, so the ceiling is settled again once the
+         real font is in. Once per table rather than once per cell. */
+      if (!this._awaitingFonts && document.fonts && document.fonts.ready) {
+        this._awaitingFonts = true;
+        var self = this;
+        document.fonts.ready.then(function () { self._applyColumns(); });
+      }
+
+      /* A cached face makes fonts.ready resolve before the rows are parsed, so
+         that alone is not enough to have measured real content. */
+      if (!this._awaitingParse && document.readyState === 'loading') {
+        this._awaitingParse = true;
+        var table = this;
+        document.addEventListener('DOMContentLoaded', function () {
+          table._applyColumns();
+        }, { once: true });
+      }
     }
 
     attributeChangedCallback() {
       this._applyVariants();
+      this._applyColumns();
+    }
+
+    /* The column layout is declared once on the table rather than per cell, so a
+       header cell and the body cells under it cannot disagree about how wide the
+       column is or how its values are aligned. Each cell reads the declaration
+       for its own index when it connects, which is what makes rows swapped in
+       later pick up the same layout with nothing to remember. This method is
+       only for the case where the declaration itself changes after render. */
+    _applyColumns() {
+      var cells = this.querySelectorAll('canvas-table-cell');
+      for (var i = 0; i < cells.length; i += 1) {
+        if (typeof cells[i]._applyColumnRules === 'function') cells[i]._applyColumnRules();
+      }
+    }
+
+    /* Returns the 1 based column indexes listed in a table level attribute.
+       Written to accept a single number as readily as a list, since a table with
+       one money column should not need comma syntax to say so. */
+    columnList(name) {
+      if (!this.hasAttribute(name)) return [];
+      return this.getAttribute(name)
+        .split(',')
+        .map(function (part) { return parseInt(part.trim(), 10); })
+        .filter(function (n) { return !isNaN(n) && n > 0; });
     }
 
     _applyVariants() {
@@ -7658,12 +7703,6 @@
         this.style.padding = 'var(--canvas-table-header-padding, 0.5rem 1rem)';
         this.style.background = 'var(--canvas-table-header-bg, #FFFFFF)';
         this.style.borderBottom = '2px solid var(--canvas-table-border, rgba(34, 36, 38, 0.1))';
-
-        if (table && table.hasAttribute('sticky')) {
-          this.style.position = 'sticky';
-          this.style.top = '0';
-          this.style.zIndex = '2';
-        }
       } else {
         this.style.padding = 'var(--canvas-table-cell-padding, 0.5rem 1rem)';
       }
@@ -7675,6 +7714,8 @@
       if (this.hasAttribute('bold')) {
         this.style.fontWeight = '700';
       }
+
+      this._applyColumnRules();
 
       if (this.hasAttribute('actions')) {
         this.style.whiteSpace = 'nowrap';
@@ -7704,6 +7745,187 @@
 
     attributeChangedCallback(name) {
       if (name === 'sort') this._applySort();
+    }
+
+    /* This cell's 1 based position among the cells of its own row. Only sibling
+       cells are counted, so a comment or a template artifact between two cells
+       cannot shift a column's index. */
+    columnIndex() {
+      var row = this.parentElement;
+      if (!row) return 0;
+      var index = 0;
+      for (var i = 0; i < row.children.length; i += 1) {
+        if (row.children[i].tagName !== 'CANVAS-TABLE-CELL') continue;
+        index += 1;
+        if (row.children[i] === this) return index;
+      }
+      return 0;
+    }
+
+    /* Reads the column layout declared on the table and applies the part of it
+       that belongs to this cell's own column. Runs on connect, so a row swapped
+       in by a later request lands with the same layout as the rows already
+       there, and again when the table's own declaration changes. */
+    _applyColumnRules() {
+      var table = this._getTable();
+      if (!table || typeof table.columnList !== 'function') return;
+
+      /* Sticky lives here rather than in connectedCallback because a table that
+         gains the attribute after its cells have connected would otherwise keep
+         a static header, which read as the flag doing nothing. */
+      if (this._isInHead()) {
+        if (table.hasAttribute('sticky')) {
+          this.style.position = 'sticky';
+          this.style.top = '0';
+          this.style.zIndex = '2';
+        } else {
+          this.style.position = '';
+          this.style.top = '';
+          this.style.zIndex = '';
+        }
+      }
+
+      var index = this.columnIndex();
+      var wraps = table.columnList('wrap');
+      var mine = wraps.indexOf(index) !== -1;
+
+      /* nowrap is declared for the whole table and lifted per column, rather
+         than set per column, because a value that reads as one thing is the
+         common case and free text is the exception. */
+      if (table.hasAttribute('nowrap')) {
+        this.style.whiteSpace = mine ? 'normal' : 'nowrap';
+        if (!mine) this._scheduleCeiling();
+      } else if (mine) {
+        this.style.whiteSpace = 'normal';
+      }
+
+      /* A wrap column is exempt from the ceiling, since prose is expected to run
+         to several lines, but it is not exempt from breaking, and it needs a
+         floor. Left alone a single unbroken token in a wrapping cell overflows
+         the cell rather than wrapping, because normal white space cannot break
+         inside a word. And a wrapping cell's smallest possible width is one
+         word, so once the other columns fill the surface this column collapses
+         to almost nothing and a sentence falls into twenty lines. The same
+         number serves as the ceiling for an ordinary column and the floor for
+         this one, so a table carries one width to reason about rather than two.
+         Below the floor the table overflows and the scroll area pans, which is
+         what every other rule here already prefers over collapsing. */
+      if (mine) {
+        this.style.overflowWrap = 'break-word';
+        this.style.minWidth = this._ceilingValue();
+      }
+
+      /* The grow column absorbs whatever width the content sized columns give
+         up. Under the automatic table layout a 100 percent width on one column
+         is a hint the browser satisfies last, which is exactly the behaviour
+         wanted, every other column takes what its content needs first. */
+      if (table.columnList('grow').indexOf(index) !== -1) {
+        this.style.width = '100%';
+      }
+
+      if (table.columnList('numeric').indexOf(index) !== -1) {
+        this.style.textAlign = 'right';
+        this.style.fontVariantNumeric = 'tabular-nums';
+      }
+    }
+
+    /* A value kept on one line still has a ceiling. Past it the cell wraps and
+       breaks the word if the value is one unbroken token, because a single
+       enormous value is worse than a second line, it pushes every column after
+       it out of reach and the reader pans past nothing to find them.
+
+       The ceiling is 320 pixels, which is what the home app's own largest
+       capped cell uses, and Canvas breaks such a cell the same way, max-width
+       with word-break break-word. It also sits under the narrowest plugin
+       surface, so one value can never force a sideways scroll by itself.
+
+       Measuring costs a forced layout, so a cheap length test comes first. At
+       the 14 pixel body size no string under 36 characters can reach 320
+       pixels, so the great majority of cells are decided without measuring. */
+    /* The ceiling is settled after the frame rather than on connect. A cell
+       upgrades as its own start tag is parsed, so its text is not there yet and
+       measuring then measures nothing. Deferring also batches every cell's
+       measurement behind one layout instead of forcing one each. */
+    _scheduleCeiling() {
+      if (this._ceilingQueued) return;
+      this._ceilingQueued = true;
+      var self = this;
+      var run = function () {
+        self._ceilingQueued = false;
+        self._applyCeiling();
+      };
+      if (typeof requestAnimationFrame === 'function') {
+        requestAnimationFrame(run);
+      } else {
+        setTimeout(run, 0);
+      }
+    }
+
+    /* The declared width that bounds a cell, read once and used for two jobs,
+       the ceiling on an ordinary column and the floor on a wrap column. */
+    _ceilingValue() {
+      var raw = getComputedStyle(this).getPropertyValue('--canvas-table-cell-max').trim();
+      return raw === '' ? '320px' : raw;
+    }
+
+    _applyCeiling() {
+      /* A cell the table no longer holds is not worth measuring, and measuring
+         a detached one reads zero and would clear a ceiling already applied. */
+      if (!this.isConnected) return;
+
+      var text = (this.textContent || '').trim();
+      if (text.length < 36) return;
+
+      var raw = this._ceilingValue();
+      var ceiling = parseFloat(raw);
+      if (isNaN(ceiling)) ceiling = 320;
+      if (raw && raw.indexOf('px') === -1 && raw !== '') {
+        /* A ceiling in any other unit cannot be compared against a measurement
+           in pixels, so the cell is capped and left to the browser rather than
+           measured against a number that means something else. */
+        this.style.width = raw;
+        this.style.maxWidth = raw;
+        this.style.whiteSpace = 'normal';
+        this.style.overflowWrap = 'break-word';
+        return;
+      }
+
+      var style = getComputedStyle(this);
+      var inset = parseFloat(style.paddingLeft) + parseFloat(style.paddingRight);
+      if (isNaN(inset)) inset = 0;
+      var room = style.boxSizing === 'border-box' ? ceiling - inset : ceiling;
+
+      /* The range measures the contents rather than the cell, because a cell is
+         a table cell whose own width is what the layout is still deciding, so
+         reading it here would be circular. */
+      var natural = 0;
+      try {
+        var range = document.createRange();
+        range.selectNodeContents(this);
+        natural = range.getBoundingClientRect().width;
+        range.detach && range.detach();
+      } catch (e) {
+        return;
+      }
+
+      if (natural > room) {
+        /* A firm width rather than only a ceiling. Under the automatic layout a
+           wrapping cell's smallest possible width is one word, so a growing
+           column asking for 100 percent would otherwise squeeze this one far
+           below the ceiling and turn one long value into a very tall row.
+           Stating the width holds the column at the ceiling and lets the value
+           wrap inside it. */
+        this.style.width = ceiling + 'px';
+        this.style.maxWidth = ceiling + 'px';
+        this.style.whiteSpace = 'normal';
+        /* break-word rather than word-break, so an ordinary sentence breaks at
+           its spaces and only a single unbroken token is split mid string. */
+        this.style.overflowWrap = 'break-word';
+      } else {
+        this.style.maxWidth = '';
+        this.style.overflowWrap = '';
+        if (this.style.width === ceiling + 'px') this.style.width = '';
+      }
     }
 
     /* Sortable header cells expose their current sort direction via aria-sort.

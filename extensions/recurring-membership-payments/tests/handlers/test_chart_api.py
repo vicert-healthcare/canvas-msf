@@ -15,6 +15,7 @@ from unittest.mock import patch
 import pytest
 
 from apex_recurring_membership_payments.handlers import chart_api
+from apex_recurring_membership_payments.logic import membership_logic
 from apex_recurring_membership_payments.models.membership import MembershipStatus
 
 from tests.support import DummyEvent, DummyRequest, days_ago, make_membership, make_patient, make_successful_charges
@@ -64,7 +65,7 @@ def test_staff_cannot_cancel_inside_lock_in_either():
     assert b"disabled" in body
     assert b"Cancellation opens" in body
 
-    with patch.object(chart_api, "cancel_recurring_payment") as mock_cancel:
+    with patch.object(membership_logic, "cancel_recurring_payment") as mock_cancel:
         cancel_api = _api("POST", "/chart/cancel")
         cancel_api.request = DummyRequest(body={"patient_id": patient.id})
         cancel_result = cancel_api.cancel()
@@ -90,7 +91,7 @@ def test_staff_cancelling_after_lock_in_records_who_cancelled():
     )
     make_successful_charges(membership, 3)
 
-    with patch.object(chart_api, "cancel_recurring_payment", return_value=True):
+    with patch.object(membership_logic, "cancel_recurring_payment", return_value=True):
         cancel_api = _api("POST", "/chart/cancel")
         cancel_api.request = DummyRequest(body={"patient_id": patient.id})
         cancel_result = cancel_api.cancel()
@@ -105,4 +106,8 @@ def test_staff_cancelling_after_lock_in_records_who_cancelled():
     index_api.request = DummyRequest(query_params={"patient_id": patient.id})
     index_result = index_api.index()
     body = index_result[0].content
-    assert b"Staff cancelled, ends 9 Dec 2026" in body
+    # The date form converged on the design system form, Mar 24, 2026,
+    # which DESIGN.md states and which forbids a numeric month, so this
+    # reads Dec 9, 2026 rather than the day first form the panel used to
+    # render on its own.
+    assert b"Staff cancelled, ends Dec 9, 2026" in body

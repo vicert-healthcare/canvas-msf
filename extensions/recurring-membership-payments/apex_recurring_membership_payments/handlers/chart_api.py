@@ -5,7 +5,8 @@ and 24. GET /chart/ renders the patient's membership status, history and
 cancellation trail through templates/chart_panel.html, whose own context
 contract is documented at the top of that file. POST /chart/cancel runs the
 same three charge rule the portal enforces, step 12 and step 13, with
-cancelled_by set to staff rather than patient, step 18.
+cancelled_by set to staff rather than patient, step 18, thin over the shared
+cancel_membership.
 
 The two routes serving canvas-plugin-ui.css and canvas-plugin-ui.js under
 this handler's /chart prefix are the orchestrator's own pass to add, per the
@@ -29,18 +30,20 @@ from canvas_sdk.templates import render_to_string
 from canvas_sdk.v1.data.patient import Patient
 
 from apex_recurring_membership_payments.logic.membership_logic import (
+    CANCEL_ELIGIBLE_STATUSES,
+    CANCEL_MESSAGES,
+    CANCEL_NOT_ELIGIBLE,
+    CANCEL_PROVIDER_UNREACHABLE,
+    CANCEL_TOO_EARLY,
     can_cancel,
+    cancel_membership,
     cancellation_opens_on,
-)
-from apex_recurring_membership_payments.logic.paytheory import (
-    PayTheoryError,
-    cancel_recurring_payment,
+    charge_history_context,
+    format_charge_amount,
+    format_epoch,
+    format_iso_date,
 )
 from apex_recurring_membership_payments.models.membership import Membership, MembershipStatus
-from apex_recurring_membership_payments.models.membership_charge import (
-    ChargeOutcome,
-    MembershipCharge,
-)
 
 _CACHE_BUST = str(int(datetime.now(timezone.utc).timestamp()))
 
@@ -51,118 +54,55 @@ _STATUS_LABELS = {
     MembershipStatus.ENDED: "Ended",
 }
 
-_CANCEL_ELIGIBLE_STATUSES = (MembershipStatus.ACTIVE, MembershipStatus.PAYMENT_FAILED)
-
-_CANCELLED_BY_LABELS = {
-    "patient": "The member",
-    "staff": "Staff",
+# The status each cancel_membership reason code answers with, FORBIDDEN for
+# the two checks a request can fail before Pay Theory is ever reached, and
+# BAD_GATEWAY for a provider that could not be reached.
+_CANCEL_STATUS_BY_REASON = {
+    CANCEL_NOT_ELIGIBLE: HTTPStatus.FORBIDDEN,
+    CANCEL_TOO_EARLY: HTTPStatus.FORBIDDEN,
+    CANCEL_PROVIDER_UNREACHABLE: HTTPStatus.BAD_GATEWAY,
 }
-
-
-def _format_iso_date(value: str) -> str:
-    """Format a "YYYY-MM-DD" date string as "9 Sep 2026", falling back to the raw value.
-
-    Pay Theory's own delivered date shapes are Documented rather than Read, so a
-    value that does not parse is shown as delivered rather than dropped, which
-    keeps a charge row informative even when the provider's format surprises us.
-    """
-    if not value:
-        return ""
-    for pattern in ("%Y-%m-%d", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%S%z"):
-        try:
-            return datetime.strptime(value, pattern).strftime("%-d %b %Y")
-        except ValueError:
-            continue
-    return value
-
-
-def _format_epoch(value: int) -> str:
-    """Format epoch seconds as "9 Sep 2026"."""
-    if not value:
-        return ""
-    return datetime.fromtimestamp(value, tz=timezone.utc).strftime("%-d %b %Y")
-
-
-def _amount_display(cents: int) -> str:
-    """Format an integer cent amount as a plain number string, for example "119.00"."""
-    return f"{cents / 100:,.2f}"
-
-
-def _charge_rows(membership: Membership) -> list[dict[str, str]]:
-    """Every MembershipCharge row for this membership's current subscription, newest first.
-
-    Reads every row this membership has ever produced, across a replaced
-    payment method or a reconciled failure, so the chart panel's history
-    never loses a charge a payment method swap or a health check reconcile
-    wrote under the same recurring_id. Ledger row 22, step 16.
-    """
-    rows = []
-    for charge in MembershipCharge.objects.filter(
-        recurring_id=membership.recurring_id
-    ).order_by("-received_at"):
-        is_success = charge.outcome == ChargeOutcome.SUCCESS
-        rows.append(
-            {
-                "date_display": _format_iso_date(charge.transaction_date),
-                "amount_display": _amount_display(charge.amount_cents),
-                "outcome_label": "Paid" if is_success else "Declined",
-                "badge_color": "green" if is_success else "red",
-                "reason": "" if is_success else charge.failure_reasons,
-            }
-        )
-    return rows
 
 
 def _panel_context(
     patient: Patient, membership: Membership | None, price_cents: int
 ) -> dict:
-    """Build the full context dict templates/chart_panel.html reads, documented at its own top."""
+    """Build the full context dict templates/chart_panel.html reads, documented at its own top.
+
+    Merges charge_history_context in whole rather than building the
+    charges list or the cancellation trail itself, so the panel and the
+    members page history modal read the same rows the same way.
+    """
+    patient_name = f"{patient.first_name} {patient.last_name}"
     context: dict = {
-        "patient_name": f"{patient.first_name} {patient.last_name}",
-        "price_display": _amount_display(price_cents),
+        "price_display": format_charge_amount(price_cents),
         "is_member": membership is not None,
         "status": membership.status if membership else "",
         "status_label": _STATUS_LABELS.get(membership.status, "") if membership else "",
-        "enrolled_display": _format_epoch(membership.enrolled_at) if membership else "",
+        "enrolled_display": format_epoch(membership.enrolled_at) if membership else "",
         "next_payment_display": "",
-        "ends_display": "",
         "card_display": "",
-        "charges": [],
-        "cancelled_by": "",
-        "cancelled_by_label": "",
-        "cancelled_display": "",
         "can_show_cancel": False,
         "can_cancel": False,
         "cancel_opens_display": "",
         "patient_id": patient.id,
         "cache_bust": _CACHE_BUST,
     }
+    context.update(charge_history_context(membership, patient_name=patient_name))
     if membership is None:
         return context
 
     if membership.card_brand or membership.card_last_four:
         context["card_display"] = f"{membership.card_brand} ending {membership.card_last_four}"
 
-    if membership.status == MembershipStatus.CANCELLING:
-        context["ends_display"] = _format_iso_date(membership.ends_at)
-    else:
-        context["next_payment_display"] = _format_iso_date(membership.next_payment_date)
+    if membership.status != MembershipStatus.CANCELLING:
+        context["next_payment_display"] = format_iso_date(membership.next_payment_date)
 
-    context["charges"] = _charge_rows(membership)
-
-    if membership.cancelled_at:
-        context["cancelled_by"] = membership.cancelled_by
-        context["cancelled_by_label"] = _CANCELLED_BY_LABELS.get(
-            membership.cancelled_by, membership.cancelled_by
-        )
-        context["cancelled_display"] = _format_epoch(membership.cancelled_at)
-        context["ends_display"] = context["ends_display"] or _format_iso_date(membership.ends_at)
-
-    if membership.status in _CANCEL_ELIGIBLE_STATUSES:
+    if membership.status in CANCEL_ELIGIBLE_STATUSES:
         context["can_show_cancel"] = True
         context["can_cancel"] = can_cancel(membership)
         if not context["can_cancel"]:
-            context["cancel_opens_display"] = _format_iso_date(cancellation_opens_on(membership))
+            context["cancel_opens_display"] = format_iso_date(cancellation_opens_on(membership))
 
     return context
 
@@ -203,10 +143,11 @@ class ChartAPI(StaffSessionAuthMixin, SimpleAPI):
     def cancel(self) -> list[Response | Effect]:
         """POST /chart/cancel, step 18.
 
-        Runs the same three charge rule step 12 enforces, with cancelled_by
-        set to staff rather than patient, and calls the provider only after
-        both the status and the charge count checks pass, so a request that
-        cannot succeed never reaches Pay Theory.
+        Thin over the shared cancel_membership, cancelled_by staff. This
+        route reads patient_id from the posted body while the members page
+        route reads patient_key, on purpose, because the chart template
+        already posts patient_id and there is no benefit in renaming a word
+        an already working template sends.
         """
         body = self.request.json() or {}
         patient_id = (body.get("patient_id") or "").strip()
@@ -218,49 +159,14 @@ class ChartAPI(StaffSessionAuthMixin, SimpleAPI):
                 )
             ]
 
-        membership = Membership.objects.filter(patient_key=patient_id).first()
-        if membership is None or membership.status not in _CANCEL_ELIGIBLE_STATUSES:
+        reason = cancel_membership(self.secrets, patient_key=patient_id, cancelled_by="staff")
+        if reason:
             return [
                 JSONResponse(
-                    {"error": "This membership cannot be cancelled."},
-                    status_code=HTTPStatus.FORBIDDEN,
+                    {"error": CANCEL_MESSAGES[reason]},
+                    status_code=_CANCEL_STATUS_BY_REASON[reason],
                 )
             ]
-        if not can_cancel(membership):
-            return [
-                JSONResponse(
-                    {
-                        "error": "Cancellation opens once the third charge has been taken.",
-                    },
-                    status_code=HTTPStatus.FORBIDDEN,
-                )
-            ]
-
-        try:
-            cancelled = cancel_recurring_payment(
-                self.secrets, recurring_id=membership.recurring_id
-            )
-        except PayTheoryError:
-            cancelled = False
-
-        if not cancelled:
-            return [
-                JSONResponse(
-                    {
-                        "error": "The payment provider could not be reached. Nothing was changed.",
-                    },
-                    status_code=HTTPStatus.BAD_GATEWAY,
-                )
-            ]
-
-        now = int(datetime.now(timezone.utc).timestamp())
-        membership.status = MembershipStatus.CANCELLING
-        membership.cancelled_at = now
-        membership.cancelled_by = "staff"
-        membership.ends_at = membership.next_payment_date
-        membership.updated_at = now
-        membership.save()
-
         return [JSONResponse({"ok": True}, status_code=HTTPStatus.OK)]
 
     @api.get("/canvas-plugin-ui.css")

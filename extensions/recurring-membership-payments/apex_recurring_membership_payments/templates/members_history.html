@@ -1,0 +1,75 @@
+{% comment %}
+Members history fragment. Rendered by MembersAPI's GET /history/<patient
+key> route in this plugin's own handlers/members_api.py, fetched into
+the history modal's body on templates/members.html once a row's View
+history button is clicked.
+
+Context contract. The route builds exactly this dict and is the only
+caller.
+
+  patient_name           "First Last"
+  patient_dob_display    the patient's date of birth, formatted, for
+                          example "Mar 15, 1985"
+  charges                a list of dicts, newest first, each carrying
+                          date_display, amount_display (a plain number
+                          string), outcome_label ("Paid" or "Declined"),
+                          badge_color ("green" or "red") and reason
+  cancelled_by           "patient", "staff" or "" when never cancelled
+  cancelled_by_label     "The member" or "Staff", matching cancelled_by
+  cancelled_display      the date cancellation was requested, formatted
+  ends_display           the date the membership ends, formatted
+
+No other context key is read. This fragment carries no doctype, no head
+and no script of its own, since it is fetched and written into a body
+div that already sits inside templates/members.html's own document.
+
+The patient identity header lives here rather than inside the shared
+charge history include because a dialog has no chart beside it, which
+the canvas-plugin-ui skill's interaction-patterns.md Patient Context
+Safety section requires, while the chart panel is satisfied by the
+chart sitting to its left.
+
+No route is declared here, this file is a template only.
+{% endcomment %}
+{% comment %}
+The modal body carries flush content so the table below sits edge to
+edge, so this header adds back its own horizontal padding rather than
+relying on the modal for it, the same way the loader block on
+It used to add back its own horizontal padding, because the dialog's
+content region carried the flush attribute and ran the table to both
+edges. That attribute is gone and the container supplies the inset now,
+which is DESIGN.md's Container Padding Responsibility rule, a container
+supplies the inset and a component that looks like it is touching an
+edge is fixed by padding the container rather than the component. So
+this band only spaces itself from the heading below it.
+{% endcomment %}
+<div style="display: flex; align-items: center; gap: var(--space-small);
+  padding-bottom: var(--space-small);
+  border-bottom: 1px solid var(--color-border);
+  margin-bottom: var(--space-medium)">
+  <span style="font-weight: 700">{{ patient_name }}</span>
+  <span style="color: var(--color-text-muted, #767676); font-size: .92857143em">DOB: {{ patient_dob_display }}</span>
+</div>
+
+{% comment %}
+Names the table and gives its volume, so a reader lands on a named
+section rather than on a bare column header row. Only the heading
+carries weight, the count stays muted and regular, which is DESIGN.md's
+Visual Hierarchy rule that weight and dark text carry the primary fact
+and regular muted text carries the secondary one. align-items baseline
+rather than center, because the heading and the count are two different
+sizes and a shared baseline is what makes them read as one line. The
+heading's own bottom margin is zeroed, since a flex item's margin does
+not collapse and would push the row apart. The count is suppressed
+when there are no charges at all, because a zero over the shared
+table's own empty block would say the same thing twice.
+{% endcomment %}
+<div style="display: flex; align-items: baseline; justify-content: space-between;
+  gap: var(--space-small); margin-bottom: var(--space-small)">
+  <h4 style="margin: 0">Charges</h4>
+  {% if charges %}
+    <span style="color: var(--color-text-muted, #767676); font-size: .92857143em">{{ charges|length }} charge{{ charges|length|pluralize }}</span>
+  {% endif %}
+</div>
+
+{% include "templates/_charge_history.html" %}

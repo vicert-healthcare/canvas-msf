@@ -1,0 +1,78 @@
+{% comment %}
+Charge history table. Included from templates/chart_panel.html,
+templates/members_history.html and templates/portal.html, the one table that shows a membership's
+charges so the surfaces sharing it cannot drift apart. See
+02-spec/SPEC.md Behaviour steps 16 and 17 for the chart panel's own use
+of this table.
+
+Context contract. Every caller passes exactly these seven keys.
+
+  history_label         the table's own accessible name, which each surface
+                         words for its own reader. The two staff surfaces
+                         name the patient and the portal says Your
+                         membership charges, because a patient reading their
+                         own page is not told their own name back
+  patient_name          "First Last", carried for a caller that wants it and
+                         read by nothing in this file
+  charges               a list of dicts, newest first, each carrying
+                         date_display, amount_display (a plain number
+                         string, no dollar sign, matching the members table's
+                         own Amount column so the same fact reads one way
+                         everywhere it appears), outcome_label ("Paid" or
+                         "Declined"), badge_color ("green" or "red") and
+                         reason
+  cancelled_by          "patient", "staff" or "" when never cancelled
+  cancelled_by_label    "The member" or "Staff", matching cancelled_by
+  cancelled_display     the date cancellation was requested, formatted
+  ends_display          the date the membership ends, formatted
+
+No other context key is read. No route is declared here, this file is a
+template only.
+
+striped and the horizontal scroll area match the members table for the same
+plugin wide reason tables.md gives, one plugin reads one way. nowrap needs
+that scroll area regardless of whether this particular table is ever wide
+enough to use it. grow nominates Outcome, the third column, since its badge
+can carry a declined reason of any length. numeric right aligns Amount, the
+second column. bold marks Date, the first and only identity column, in the
+header and in every row, including the cancellation row this file renders
+before any charge.
+{% endcomment %}
+<canvas-scroll-area horizontal aria-label="{{ history_label }}">
+<canvas-table compact striped nowrap grow="3" numeric="2" aria-label="{{ history_label }}">
+  <canvas-table-head>
+    <canvas-table-row>
+      <canvas-table-cell bold>Date</canvas-table-cell>
+      <canvas-table-cell>Amount</canvas-table-cell>
+      <canvas-table-cell>Outcome</canvas-table-cell>
+    </canvas-table-row>
+  </canvas-table-head>
+  <canvas-table-body id="charge-history-body">
+    {% if not cancelled_by and not charges %}
+      <canvas-table-row>
+        <canvas-table-cell colspan>
+          <div style="padding: var(--space-huge); text-align: center">
+            <h3 style="margin: 0 0 var(--space-small); font-weight: 700">No charges yet</h3>
+            <p style="margin: 0; color: var(--color-text-muted, #767676)">The first charge lands on the next scheduled payment date.</p>
+          </div>
+        </canvas-table-cell>
+      </canvas-table-row>
+    {% else %}
+      {% if cancelled_by %}
+        <canvas-table-row>
+          <canvas-table-cell bold>{{ cancelled_display }}</canvas-table-cell>
+          <canvas-table-cell></canvas-table-cell>
+          <canvas-table-cell><canvas-badge color="orange" size="mini">{{ cancelled_by_label }} cancelled, ends {{ ends_display }}</canvas-badge></canvas-table-cell>
+        </canvas-table-row>
+      {% endif %}
+      {% for charge in charges %}
+        <canvas-table-row {% if charge.badge_color == "red" %}negative{% endif %}>
+          <canvas-table-cell bold>{{ charge.date_display }}</canvas-table-cell>
+          <canvas-table-cell>{{ charge.amount_display }}</canvas-table-cell>
+          <canvas-table-cell><canvas-badge color="{{ charge.badge_color }}" size="mini">{{ charge.outcome_label }}{% if charge.reason %}, {{ charge.reason }}{% endif %}</canvas-badge></canvas-table-cell>
+        </canvas-table-row>
+      {% endfor %}
+    {% endif %}
+  </canvas-table-body>
+</canvas-table>
+</canvas-scroll-area>
