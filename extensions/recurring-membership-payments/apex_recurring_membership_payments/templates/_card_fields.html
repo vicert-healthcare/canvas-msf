@@ -1,0 +1,45 @@
+{% comment %}
+The card fields, included by templates/portal.html from both places that take a
+payment method, the join block and the payment failed block. Only one of those
+ever renders on a page, so the ids below never appear twice.
+
+Two shapes, chosen by payments_configured, which the route sets true only when
+PAYTHEORY_SDK_URL and PAYTHEORY_PUBLIC_KEY both carry a value.
+
+Configured renders the three empty containers Pay Theory's hosted fields mount
+their own iframes into. That is what behaviour step 4 and AC1 require, and it is
+why the page carries no input of its own, the card never touches this document.
+
+Unconfigured renders three Canvas inputs instead, so the page reads as the
+finished thing on an instance with no merchant account behind it. Nothing binds
+them, nothing reads their values and no route here can take a payment while
+payments_configured is false. 04-delivery/demo/README.md carries the why and the
+date this stops being needed.
+
+Context read. payments_configured only.
+{% endcomment %}
+<div class="field-group">
+  {% if payments_configured %}
+    <div>
+      <label class="field-label" for="pay-theory-credit-card-number">Number</label>
+      <div id="pay-theory-credit-card-number" class="pt-field"></div>
+    </div>
+    <canvas-inline-row>
+      <div style="flex: 1 0 160px">
+        <label class="field-label" for="pay-theory-credit-card-exp">Expiry</label>
+        <div id="pay-theory-credit-card-exp" class="pt-field"></div>
+      </div>
+      <div style="flex: 1 0 160px">
+        <label class="field-label" for="pay-theory-credit-card-cvv">Security code</label>
+        <div id="pay-theory-credit-card-cvv" class="pt-field"></div>
+      </div>
+    </canvas-inline-row>
+  {% else %}
+    <canvas-input id="card-number" label="Number" placeholder="0000 0000 0000 0000"></canvas-input>
+    <canvas-inline-row>
+      <canvas-input id="card-exp" label="Expiry" placeholder="MM / YY"></canvas-input>
+      <canvas-input id="card-cvv" label="Security code" placeholder="123"></canvas-input>
+    </canvas-inline-row>
+  {% endif %}
+  <p id="pt-error" class="pt-error" role="alert" aria-live="polite" style="display: none"></p>
+</div>

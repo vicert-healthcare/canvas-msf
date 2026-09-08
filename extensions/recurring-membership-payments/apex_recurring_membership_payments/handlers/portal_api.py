@@ -131,6 +131,11 @@ def _portal_context(
         "patient_key": patient_id,
         "paytheory_sdk_url": sdk_url,
         "paytheory_public_key": public_key,
+        # templates/_card_fields.html renders Pay Theory's own mount points
+        # when this is true and Canvas inputs when it is false, so an instance
+        # with no merchant account still shows the finished page. Both values
+        # have to be there, since one alone loads no SDK.
+        "payments_configured": bool(sdk_url and public_key),
         "csp_nonce": uuid4().hex,
         "price_display": format_charge_amount(effective_price_cents),
         "interval_code": effective_interval,

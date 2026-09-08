@@ -297,7 +297,18 @@ def test_new_payment_details_collect_missed_month_and_recover_membership():
         transaction_id="T-declined",
     )
 
-    index_api = _api("GET", "/portal/")
+    # The two Pay Theory secrets are what put the hosted field containers on
+    # the page at all. Without them templates/_card_fields.html renders the
+    # Canvas inputs an instance with no merchant account shows instead, so
+    # this criterion states the configured case the way AC1 does.
+    index_api = _api(
+        "GET",
+        "/portal/",
+        secrets={
+            "PAYTHEORY_SDK_URL": "https://sdk.example.test/pt.js",
+            "PAYTHEORY_PUBLIC_KEY": "pk_test_1",
+        },
+    )
     index_api.request = DummyRequest(headers={"canvas-logged-in-user-id": patient.id})
     index_result = index_api.index()
     body = index_result[0].content

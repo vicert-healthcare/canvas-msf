@@ -10,6 +10,9 @@ these keys.
                           call's metadata, never rendered as text
   paytheory_sdk_url      PAYTHEORY_SDK_URL, the script tag src in the head
   paytheory_public_key   PAYTHEORY_PUBLIC_KEY, the payTheoryFields apiKey
+  payments_configured    true only when both of the two above carry a value.
+                          templates/_card_fields.html is the one place that
+                          reads it and its own comment says what each shape is
   csp_nonce              the same nonce value carried on the response's own
                           Content-Security-Policy header, set on the one
                           inline script tag below and nowhere else
@@ -64,7 +67,11 @@ template only.
   <link href="https://fonts.googleapis.com/css?family=Lato:400,700,400italic,700italic&subset=latin" rel="stylesheet">
   <link rel="stylesheet" href="/plugin-io/api/apex_recurring_membership_payments/portal/canvas-plugin-ui.css?v={{ cache_bust }}">
   <script src="/plugin-io/api/apex_recurring_membership_payments/portal/canvas-plugin-ui.js?v={{ cache_bust }}"></script>
-  <script src="{{ paytheory_sdk_url }}"></script>
+  {% comment %}
+  Guarded, because an unconfigured instance would render src="" here, which the
+  browser resolves to this page's own address and fetches back as a script.
+  {% endcomment %}
+  {% if payments_configured %}<script src="{{ paytheory_sdk_url }}"></script>{% endif %}
   <style>
     body {
       background: var(--palette-white);
@@ -128,23 +135,7 @@ template only.
         after until you cancel. Cancellation opens once the third charge has been taken.
       </p>
 
-      <div class="field-group">
-        <div>
-          <label class="field-label" for="pay-theory-credit-card-number">Number</label>
-          <div id="pay-theory-credit-card-number" class="pt-field"></div>
-        </div>
-        <canvas-inline-row>
-          <div style="flex: 1 0 160px">
-            <label class="field-label" for="pay-theory-credit-card-exp">Expiry</label>
-            <div id="pay-theory-credit-card-exp" class="pt-field"></div>
-          </div>
-          <div style="flex: 1 0 160px">
-            <label class="field-label" for="pay-theory-credit-card-cvv">Security code</label>
-            <div id="pay-theory-credit-card-cvv" class="pt-field"></div>
-          </div>
-        </canvas-inline-row>
-        <p id="pt-error" class="pt-error" role="alert" aria-live="polite" style="display: none"></p>
-      </div>
+      {% include "templates/_card_fields.html" %}
 
       <canvas-checkbox id="consent-checkbox" label="I agree to being charged {{ price_display }} dollars every {% if interval_code == "WEEKLY" %}week{% elif interval_code == "BI_WEEKLY" %}two weeks{% elif interval_code == "QUARTERLY" %}3 months{% elif interval_code == "BI_ANNUAL" %}6 months{% elif interval_code == "ANNUAL" %}year{% else %}month{% endif %} until I cancel"></canvas-checkbox>
 
@@ -189,23 +180,7 @@ template only.
         <canvas-divider></canvas-divider>
         <p class="muted-line">Enter new payment details below. The missed charge is collected with them and your membership continues on them.</p>
 
-        <div class="field-group">
-          <div>
-            <label class="field-label" for="pay-theory-credit-card-number">Number</label>
-            <div id="pay-theory-credit-card-number" class="pt-field"></div>
-          </div>
-          <canvas-inline-row>
-            <div style="flex: 1 0 160px">
-              <label class="field-label" for="pay-theory-credit-card-exp">Expiry</label>
-              <div id="pay-theory-credit-card-exp" class="pt-field"></div>
-            </div>
-            <div style="flex: 1 0 160px">
-              <label class="field-label" for="pay-theory-credit-card-cvv">Security code</label>
-              <div id="pay-theory-credit-card-cvv" class="pt-field"></div>
-            </div>
-          </canvas-inline-row>
-          <p id="pt-error" class="pt-error" role="alert" aria-live="polite" style="display: none"></p>
-        </div>
+        {% include "templates/_card_fields.html" %}
 
         <div class="action-row">
           <canvas-button id="save-pay-btn" variant="primary" disabled>Save and pay {{ charges.0.amount_display }}</canvas-button>
@@ -262,19 +237,34 @@ template only.
       });
   }
 
+  // True only on a page whose card fields are Pay Theory's own iframes with the
+  // SDK behind them. False on an instance with no merchant account configured,
+  // where templates/_card_fields.html rendered Canvas inputs instead. Every
+  // provider call below goes through this first.
+  function hostedFieldsArePresent() {
+    return !!document.getElementById("pay-theory-credit-card-number") && !!window.paytheory;
+  }
+
+  function enableSubmitButtons() {
+    var joinBtn = document.getElementById("join-btn");
+    var savePayBtn = document.getElementById("save-pay-btn");
+    if (joinBtn) {
+      joinBtn.removeAttribute("disabled");
+    }
+    if (savePayBtn) {
+      savePayBtn.removeAttribute("disabled");
+    }
+  }
+
   function mountPayTheoryFields() {
-    if (!document.getElementById("pay-theory-credit-card-number") || !window.paytheory) {
+    if (!hostedFieldsArePresent()) {
+      // Nothing mounts, and readyObserver is what would otherwise enable the
+      // button, so the page would sit behind a disabled one forever.
+      enableSubmitButtons();
       return;
     }
     paytheory.readyObserver(function () {
-      var joinBtn = document.getElementById("join-btn");
-      var savePayBtn = document.getElementById("save-pay-btn");
-      if (joinBtn) {
-        joinBtn.removeAttribute("disabled");
-      }
-      if (savePayBtn) {
-        savePayBtn.removeAttribute("disabled");
-      }
+      enableSubmitButtons();
     });
     paytheory.errorObserver(function (message) {
       var errorEl = document.getElementById("pt-error");
@@ -290,6 +280,11 @@ template only.
   }
 
   function tokenize(onTokenized) {
+    if (!hostedFieldsArePresent()) {
+      // No provider to tokenize against, so the page stops here rather than
+      // reporting a failure it caused itself.
+      return;
+    }
     var params = { metadata: { canvas_patient_id: patientKey } };
     if (payorId) {
       params.payorId = payorId;
