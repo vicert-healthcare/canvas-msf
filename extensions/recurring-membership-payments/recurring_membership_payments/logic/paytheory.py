@@ -4,8 +4,10 @@ Every function takes the handler's own secrets mapping as its first argument
 and resolves the endpoint and the authorization header from it, so no route
 and no cron task builds either one for itself. Section 3 of the specification
 is the source for the endpoint shape, the header shape and the operations
-below, all labelled Documented against the Pay Theory documentation, and none
-of it has been confirmed against a sandbox account yet.
+below, which were labelled Documented against the Pay Theory documentation.
+Every argument type in this file is now Read instead, introspected off the
+sandbox schema on 2026-09-09 after a cancellation was refused for declaring
+one variable nullable where the schema requires a non null.
 
 This module never calls createTransaction and never calls
 createRetryForFailedRecurringPayment, and it never imports the unmerged
@@ -19,6 +21,7 @@ import json
 from typing import Any
 
 from canvas_sdk.utils.http import Http
+from logger import log
 
 _DOMAINS = {
     "production": "paytheory.com",
@@ -85,6 +88,21 @@ def _request(secrets: dict[str, str], query: str, variables: dict[str, Any]) -> 
         raise PayTheoryError("Pay Theory returned a response that could not be read.") from error
 
     if response.status_code != 200 or body.get("errors"):
+        # Log what the provider actually said. The message and errorType of a
+        # GraphQL error name the field or rule that was broken and carry no
+        # card data, no token and no credential, so they are safe to log and
+        # they are the only thing that tells a defect in this plugin apart from
+        # an outage at Pay Theory. Raising a single sentence with nothing
+        # written down cost a whole debugging pass on 2026-09-08.
+        detail = "; ".join(
+            f"{error.get('errorType') or 'ERROR'}: {error.get('message')}"
+            for error in (body.get("errors") or [])
+        )
+        log.error(
+            "Pay Theory returned an error. status=%s detail=%s",
+            response.status_code,
+            detail or "no error body",
+        )
         raise PayTheoryError("Pay Theory returned an error.")
 
     return body.get("data") or {}
@@ -118,6 +136,7 @@ def create_recurring_payment(
     payment_method_id: str,
     recurring_name: str,
     payor_id: str | None = None,
+    payor: dict | None = None,
     metadata: dict | None = None,
     first_payment_date: str | None = None,
     payment_count: int | None = None,
@@ -129,6 +148,13 @@ def create_recurring_payment(
 
     Omitting first_payment_date, the caller's default and the only way step 7
     is ever used, is what makes Pay Theory take the first charge immediately.
+
+    One of payor_id and payor is required, which the documentation does not say.
+    The reference lists both as optional and the sandbox refuses a call carrying
+    neither with VALIDATION_ERROR and the message Payor ID or Payor needed,
+    proven against the study merchant on 2026-09-08. A returning member passes
+    payor_id so Pay Theory keeps one payor, and a first time joiner passes payor
+    and lets Pay Theory mint one.
     """
     payment_input: dict[str, Any] = {
         "amount": int(amount),
@@ -137,8 +163,21 @@ def create_recurring_payment(
         "payment_method_id": payment_method_id,
         "recurring_name": recurring_name,
     }
+    # payor_id wins when both are given, since an existing payor is the stronger
+    # statement and sending both would ask Pay Theory to reconcile them.
     if payor_id:
         payment_input["payor_id"] = payor_id
+    elif payor:
+        payment_input["payor"] = payor
+        # The keys and the length of the name, never the values. Pay Theory
+        # answers a missing name with Invalid payor: full name required, and
+        # that message alone cannot tell a field this plugin never sent from a
+        # field it sent empty.
+        log.info(
+            "Pay Theory payor sent. keys=%s full_name_length=%s",
+            sorted(payor.keys()),
+            len(payor.get("full_name") or ""),
+        )
     encoded_metadata = _encode_metadata(metadata)
     if encoded_metadata is not None:
         payment_input["metadata"] = encoded_metadata
@@ -202,8 +241,18 @@ def update_recurring_payment(
     return data.get("updateRecurringPayment") or {}
 
 
+# Every variable below is declared exactly as Pay Theory's own schema
+# declares the argument it feeds, read by introspecting the sandbox on
+# 2026-09-09 rather than from the documentation. A variable declared
+# nullable cannot be used where the schema requires a non null, GraphQL
+# refuses the document at validation with VariableTypeMismatch before the
+# resolver ever runs, and it refuses it on every call rather than only on a
+# null value, so a mutation declared one notch too loose never worked once.
+# This mutation was that, recurring_id: String against a schema that says
+# String!, and no cancellation had ever reached the provider to find out,
+# because the three charge rule refused every one of them first.
 _CANCEL_RECURRING_PAYMENT = """
-mutation CancelRecurringPayment($recurring_id: String) {
+mutation CancelRecurringPayment($recurring_id: String!) {
   cancelRecurringPayment(recurring_id: $recurring_id)
 }
 """
@@ -279,8 +328,13 @@ def webhooks(secrets: dict[str, str], *, endpoint: str) -> list[dict[str, Any]]:
     return data.get("webhooks") or []
 
 
+# createWebhook(endpoint: String!, name: String!) per the same
+# introspection, so both variables were declared a notch too loose and this
+# mutation has never been accepted either. Both callers in health_check.py
+# always pass a real endpoint and the fixed webhook name, so nothing at a
+# call site changes.
 _CREATE_WEBHOOK = """
-mutation CreateWebhook($endpoint: String, $name: String) {
+mutation CreateWebhook($endpoint: String!, $name: String!) {
   createWebhook(endpoint: $endpoint, name: $name) {
     success
   }
@@ -294,8 +348,11 @@ def create_webhook(secrets: dict[str, str], *, endpoint: str, name: str) -> bool
     return bool((data.get("createWebhook") or {}).get("success"))
 
 
+# updateWebhook(endpoint: String!, name: String, is_active: Boolean) per
+# the same introspection, so endpoint alone was wrong here and the other two
+# are genuinely optional.
 _UPDATE_WEBHOOK = """
-mutation UpdateWebhook($endpoint: String, $name: String, $is_active: Boolean) {
+mutation UpdateWebhook($endpoint: String!, $name: String, $is_active: Boolean) {
   updateWebhook(endpoint: $endpoint, name: $name, is_active: $is_active) {
     success
   }

@@ -1,4 +1,4 @@
-"""Tests reading apex_recurring_membership_payments/CANVAS_MANIFEST.json directly.
+"""Tests reading recurring_membership_payments/CANVAS_MANIFEST.json directly.
 
 02-spec/SPEC.md criterion 16, the one manifest level acceptance criterion,
 read from the file rather than from any handler, since nothing in this
@@ -10,7 +10,7 @@ from pathlib import Path
 
 _MANIFEST_PATH = (
     Path(__file__).resolve().parent.parent
-    / "apex_recurring_membership_payments"
+    / "recurring_membership_payments"
     / "CANVAS_MANIFEST.json"
 )
 
@@ -25,16 +25,21 @@ def test_manifest_declares_portal_page_scopes_namespace_and_no_redirect_allowlis
     """
     manifest = _manifest()
 
+    # One entry per instance the plugin is installed on rather than exactly
+    # one. The home app matches an entry against the frame's own absolute URL
+    # by prefix, so a single entry sandboxes the portal frame on one host and
+    # leaves it unsandboxed everywhere else. What the criterion guarantees is
+    # that every entry is this plugin's own portal page and nothing else.
     url_permissions = manifest["url_permissions"]
-    assert len(url_permissions) == 1
-    entry = url_permissions[0]
-    assert sorted(entry["permissions"]) == sorted(["ALLOW_SAME_ORIGIN", "SCRIPTS"])
-    assert entry["url"].endswith(
-        "/plugin-io/api/apex_recurring_membership_payments/portal/"
-    )
+    assert url_permissions
+    for entry in url_permissions:
+        assert sorted(entry["permissions"]) == sorted(["ALLOW_SAME_ORIGIN", "SCRIPTS"])
+        assert entry["url"].endswith(
+            "/plugin-io/api/recurring_membership_payments/portal/"
+        )
 
     assert manifest["custom_data"] == {
-        "namespace": "apex__membership",
+        "namespace": "membership__data",
         "access": "read_write",
     }
 

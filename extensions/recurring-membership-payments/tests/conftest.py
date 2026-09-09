@@ -1,4 +1,4 @@
-"""Shared pytest fixtures for apex_recurring_membership_payments.
+"""Shared pytest fixtures for recurring_membership_payments.
 
 Creates the SQLite tables for this plugin's own custom models before any
 test runs. Nothing else does it. pytest-canvas, brought in by the
@@ -7,7 +7,7 @@ wrap each test in a transaction, and it creates no table for a custom model,
 so without the fixture below every custom model query fails with no such
 table. The tables are created here the way the installer creates them, by
 driving plugin_runner.ddl directly for this plugin's real package name,
-apex_recurring_membership_payments, which carries the client prefix rather
+recurring_membership_payments, which carries the client prefix rather
 than matching the container directory.
 """
 
@@ -17,23 +17,23 @@ from pathlib import Path
 import pytest
 
 
-_PLUGIN_NAME = "apex_recurring_membership_payments"
+_PLUGIN_NAME = "recurring_membership_payments"
 _MODEL_MODULES = (
-    "apex_recurring_membership_payments.models.proxy",
-    "apex_recurring_membership_payments.models.membership",
-    "apex_recurring_membership_payments.models.membership_charge",
+    "recurring_membership_payments.models.proxy",
+    "recurring_membership_payments.models.membership",
+    "recurring_membership_payments.models.membership_charge",
 )
 
 # Every handler module that calls render_to_string, so a rendered assertion
 # reads the real templates/*.html files rather than a stand in for them.
 _TEMPLATE_RENDERING_MODULES = (
-    "apex_recurring_membership_payments.handlers.portal_api",
-    "apex_recurring_membership_payments.handlers.chart_api",
-    "apex_recurring_membership_payments.handlers.members_api",
+    "recurring_membership_payments.handlers.portal_api",
+    "recurring_membership_payments.handlers.chart_api",
+    "recurring_membership_payments.handlers.members_api",
 )
 
 # The project root, the directory carrying pyproject.toml and this plugin's
-# own package, apex_recurring_membership_payments/. render_to_string resolves
+# own package, recurring_membership_payments/. render_to_string resolves
 # a plugin's template directory as PLUGIN_DIRECTORY / plugin_name, and outside
 # an installed plugin PLUGIN_DIRECTORY has no reason to already point here.
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent

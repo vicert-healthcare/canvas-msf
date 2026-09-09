@@ -13,7 +13,7 @@ markup and comparing them by hand.
 
 import pytest
 
-from apex_recurring_membership_payments.handlers import chart_api, members_api, portal_api
+from recurring_membership_payments.handlers import chart_api, members_api, portal_api
 
 from tests.support import DummyEvent, DummyRequest, make_charge, make_membership, make_patient
 

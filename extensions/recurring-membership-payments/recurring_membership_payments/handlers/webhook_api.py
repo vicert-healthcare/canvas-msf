@@ -6,7 +6,7 @@ every effect with the join route and the daily health check through
 membership_logic, so a failure or a recovery never means two things
 depending on where it was observed from.
 
-This module imports nothing from apex_recurring_membership_payments.logic.paytheory
+This module imports nothing from recurring_membership_payments.logic.paytheory
 beyond the SUCCESS_STATUSES constant, a fact about which provider status
 strings count as a successful charge, never a call. Step 28 of the
 specification is the refusal this module exists to keep, a webhook delivery
@@ -22,13 +22,13 @@ from canvas_sdk.effects import Effect
 from canvas_sdk.effects.simple_api import JSONResponse, Response
 from canvas_sdk.handlers.simple_api import Credentials, SimpleAPI, api
 
-from apex_recurring_membership_payments.logic.membership_logic import (
+from recurring_membership_payments.logic.membership_logic import (
     failure_effects,
     recovery_effects,
 )
-from apex_recurring_membership_payments.logic.paytheory import SUCCESS_STATUSES
-from apex_recurring_membership_payments.models.membership import Membership, MembershipStatus
-from apex_recurring_membership_payments.models.membership_charge import (
+from recurring_membership_payments.logic.paytheory import SUCCESS_STATUSES
+from recurring_membership_payments.models.membership import Membership, MembershipStatus
+from recurring_membership_payments.models.membership_charge import (
     ChargeOutcome,
     ChargeSource,
     MembershipCharge,

@@ -29,21 +29,24 @@ from canvas_sdk.handlers.simple_api import SimpleAPI, StaffSessionAuthMixin, api
 from canvas_sdk.templates import render_to_string
 from canvas_sdk.v1.data.patient import Patient
 
-from apex_recurring_membership_payments.logic.membership_logic import (
+from recurring_membership_payments.logic.membership_logic import (
     CANCEL_ELIGIBLE_STATUSES,
-    CANCEL_MESSAGES,
     CANCEL_NOT_ELIGIBLE,
     CANCEL_PROVIDER_UNREACHABLE,
+    CANCEL_REASON_MAX_LENGTH,
     CANCEL_TOO_EARLY,
     can_cancel,
     cancel_membership,
+    cancel_message,
     cancellation_opens_on,
+    commitment_charges,
+    successful_charge_count,
     charge_history_context,
     format_charge_amount,
     format_epoch,
     format_iso_date,
 )
-from apex_recurring_membership_payments.models.membership import Membership, MembershipStatus
+from recurring_membership_payments.models.membership import Membership, MembershipStatus
 
 _CACHE_BUST = str(int(datetime.now(timezone.utc).timestamp()))
 
@@ -65,7 +68,10 @@ _CANCEL_STATUS_BY_REASON = {
 
 
 def _panel_context(
-    patient: Patient, membership: Membership | None, price_cents: int
+    patient: Patient,
+    membership: Membership | None,
+    price_cents: int,
+    charges_before_cancel: int,
 ) -> dict:
     """Build the full context dict templates/chart_panel.html reads, documented at its own top.
 
@@ -84,13 +90,31 @@ def _panel_context(
         "card_display": "",
         "can_show_cancel": False,
         "can_cancel": False,
+        "is_early_cancel": False,
+        "successful_charges": 0,
         "cancel_opens_display": "",
+        # The commitment the early cancellation of the 2026-09-08 engineer
+        # direction names, and the reason field's own limit, so the panel
+        # renders the column's real length rather than a number typed twice.
+        "charges_before_cancel": charges_before_cancel,
+        "cancel_reason_max_length": CANCEL_REASON_MAX_LENGTH,
+        "cancel_override_reason": "",
         "patient_id": patient.id,
         "cache_bust": _CACHE_BUST,
     }
     context.update(charge_history_context(membership, patient_name=patient_name))
     if membership is None:
         return context
+
+    # Read straight off the row rather than through charge_history_context,
+    # because the portal page shares that function and the patient is
+    # deliberately never told that staff can override the commitment.
+    # Coalesced rather than read raw, because the platform adds a new
+    # CustomModel column through ALTER TABLE ADD COLUMN with the declared
+    # default deliberately stripped, plugin_runner/ddl.py, so every row that
+    # existed before this field did reads back None rather than the empty
+    # string the model declares.
+    context["cancel_override_reason"] = membership.cancel_override_reason or ""
 
     if membership.card_brand or membership.card_last_four:
         context["card_display"] = f"{membership.card_brand} ending {membership.card_last_four}"
@@ -100,9 +124,19 @@ def _panel_context(
 
     if membership.status in CANCEL_ELIGIBLE_STATUSES:
         context["can_show_cancel"] = True
-        context["can_cancel"] = can_cancel(membership)
+        context["can_cancel"] = can_cancel(membership, charges_before_cancel)
         if not context["can_cancel"]:
-            context["cancel_opens_display"] = format_iso_date(cancellation_opens_on(membership))
+            # The staff early cancellation. The control stays live and only
+            # its label changes, the same shape the members row carries, so
+            # a staff member has the same power on both staff surfaces. The
+            # count and the date it would open on its own are both still
+            # shown, since a member who only has to wait a month is worth
+            # telling rather than overriding.
+            context["is_early_cancel"] = True
+            context["successful_charges"] = successful_charge_count(membership)
+            context["cancel_opens_display"] = format_iso_date(
+                cancellation_opens_on(membership, charges_before_cancel)
+            )
 
     return context
 
@@ -136,7 +170,9 @@ class ChartAPI(StaffSessionAuthMixin, SimpleAPI):
             membership = None
 
         price_cents = int(self.secrets.get("MEMBERSHIP_PRICE_CENTS") or 11900)
-        context = _panel_context(patient, membership, price_cents)
+        context = _panel_context(
+            patient, membership, price_cents, commitment_charges(self.secrets)
+        )
         return [HTMLResponse(render_to_string("templates/chart_panel.html", context))]
 
     @api.post("/cancel")
@@ -148,6 +184,11 @@ class ChartAPI(StaffSessionAuthMixin, SimpleAPI):
         route reads patient_key, on purpose, because the chart template
         already posts patient_id and there is no benefit in renaming a word
         an already working template sends.
+
+        override_reason is read off the body and passed straight through,
+        the same as the members route, so both staff surfaces carry the
+        early cancellation of the 2026-09-08 engineer direction and neither
+        of them decides anything about it.
         """
         body = self.request.json() or {}
         patient_id = (body.get("patient_id") or "").strip()
@@ -159,11 +200,16 @@ class ChartAPI(StaffSessionAuthMixin, SimpleAPI):
                 )
             ]
 
-        reason = cancel_membership(self.secrets, patient_key=patient_id, cancelled_by="staff")
+        reason = cancel_membership(
+            self.secrets,
+            patient_key=patient_id,
+            cancelled_by="staff",
+            override_reason=body.get("override_reason") or "",
+        )
         if reason:
             return [
                 JSONResponse(
-                    {"error": CANCEL_MESSAGES[reason]},
+                    {"error": cancel_message(reason, commitment_charges(self.secrets))},
                     status_code=_CANCEL_STATUS_BY_REASON[reason],
                 )
             ]

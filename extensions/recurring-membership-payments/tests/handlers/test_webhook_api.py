@@ -11,9 +11,9 @@ import json
 
 import pytest
 
-from apex_recurring_membership_payments.handlers import webhook_api
-from apex_recurring_membership_payments.models.membership import Membership, MembershipStatus
-from apex_recurring_membership_payments.models.membership_charge import MembershipCharge
+from recurring_membership_payments.handlers import webhook_api
+from recurring_membership_payments.models.membership import Membership, MembershipStatus
+from recurring_membership_payments.models.membership_charge import MembershipCharge
 from canvas_sdk.effects.effect import EffectType
 
 from tests.support import DummyEvent, DummyRequest, make_membership, make_patient, make_staff

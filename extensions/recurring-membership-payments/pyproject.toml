@@ -5,10 +5,10 @@ authors = [
 dependencies = [
   "canvas[test-utils]"
 ]
-description = "Monthly membership subscriptions through Pay Theory for Apex."
+description = "Monthly membership subscriptions through Pay Theory."
 license = "MIT"
 name = "recurring-membership-payments"
-readme = "apex_recurring_membership_payments/README.md"
+readme = "recurring_membership_payments/README.md"
 requires-python = ">=3.11"
 version = "0.1.0"
 

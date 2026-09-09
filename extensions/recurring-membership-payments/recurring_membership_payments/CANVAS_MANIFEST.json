@@ -1,25 +1,29 @@
 {
     "sdk_version": "0.1.4",
     "plugin_version": "0.1.0",
-    "name": "apex_recurring_membership_payments",
+    "name": "recurring_membership_payments",
     "description": "Monthly membership subscriptions through Pay Theory, joined and cancelled in the patient portal, watched from the chart and from a members page.",
     "url_permissions": [
         {
-            "url": "http://localhost:8000/plugin-io/api/apex_recurring_membership_payments/portal/",
+            "url": "http://localhost:8000/plugin-io/api/recurring_membership_payments/portal/",
+            "permissions": ["ALLOW_SAME_ORIGIN", "SCRIPTS"]
+        },
+        {
+            "url": "https://vicert-testing.canvasmedical.com/plugin-io/api/recurring_membership_payments/portal/",
             "permissions": ["ALLOW_SAME_ORIGIN", "SCRIPTS"]
         }
     ],
     "components": {
         "applications": [
             {
-                "class": "apex_recurring_membership_payments.applications.portal_app:MembershipPortalApp",
+                "class": "recurring_membership_payments.applications.portal_app:MembershipPortalApp",
                 "name": "Membership",
                 "description": "Join or cancel the practice membership.",
                 "scope": "portal_menu_item",
                 "icon": "assets/icon.png"
             },
             {
-                "class": "apex_recurring_membership_payments.applications.chart_app:MembershipChartApp",
+                "class": "recurring_membership_payments.applications.chart_app:MembershipChartApp",
                 "name": "Membership",
                 "description": "Membership status, charge history and staff cancel for this patient.",
                 "scope": "patient_specific",
@@ -28,7 +32,7 @@
                 "panel_priority": 100
             },
             {
-                "class": "apex_recurring_membership_payments.applications.members_app:MembersPageApp",
+                "class": "recurring_membership_payments.applications.members_app:MembersPageApp",
                 "name": "Members",
                 "description": "Every member, searchable and filterable by status, with declined charges in view.",
                 "scope": "provider_menu_item",
@@ -39,23 +43,23 @@
         ],
         "handlers": [
             {
-                "class": "apex_recurring_membership_payments.handlers.portal_api:PortalAPI",
+                "class": "recurring_membership_payments.handlers.portal_api:PortalAPI",
                 "description": "Serves the portal membership page and its join, payment method and cancel actions, patient session only."
             },
             {
-                "class": "apex_recurring_membership_payments.handlers.chart_api:ChartAPI",
+                "class": "recurring_membership_payments.handlers.chart_api:ChartAPI",
                 "description": "Serves the chart panel and its staff cancel action, staff session only."
             },
             {
-                "class": "apex_recurring_membership_payments.handlers.members_api:MembersAPI",
+                "class": "recurring_membership_payments.handlers.members_api:MembersAPI",
                 "description": "Serves the members page, its search and filter, the view history modal and the staff cancel action, staff session only."
             },
             {
-                "class": "apex_recurring_membership_payments.handlers.webhook_api:WebhookAPI",
+                "class": "recurring_membership_payments.handlers.webhook_api:WebhookAPI",
                 "description": "Receives Pay Theory webhook deliveries on a secret route and records each charge outcome."
             },
             {
-                "class": "apex_recurring_membership_payments.handlers.health_check:DailyHealthCheck",
+                "class": "recurring_membership_payments.handlers.health_check:DailyHealthCheck",
                 "description": "Once a day, keeps the webhook registered and active and reconciles subscription status against Pay Theory."
             }
         ],
@@ -67,6 +71,8 @@
     "variables": [
         {"name": "MEMBERSHIP_PRICE_CENTS", "default": "11900"},
         {"name": "MEMBERSHIP_INTERVAL", "default": "MONTHLY"},
+        {"name": "MEMBERSHIP_NAME", "default": "Practice membership"},
+        {"name": "COMMITMENT_CHARGES", "default": "3"},
         {"name": "FAILURE_TASK_ASSIGNEE_ID"},
         {"name": "FAILURE_TASK_TEAM_ID"},
         {"name": "CANVAS_PUBLIC_URL"},
@@ -81,7 +87,7 @@
         {"name": "namespace_read_write_access_key", "sensitive": true}
     ],
     "custom_data": {
-        "namespace": "apex__membership",
+        "namespace": "membership__data",
         "access": "read_write"
     },
     "tags": {},

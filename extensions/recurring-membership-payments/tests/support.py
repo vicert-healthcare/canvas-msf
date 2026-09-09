@@ -1,4 +1,4 @@
-"""Shared test doubles and factories for apex_recurring_membership_payments.
+"""Shared test doubles and factories for recurring_membership_payments.
 
 Not collected as a test module itself, tests/tests.py in the pytest.ini
 python_files list, and this file is named neither test_*.py nor *_tests.py
@@ -18,8 +18,8 @@ from typing import Any
 
 from canvas_sdk.test_utils.factories import PatientFactory, StaffFactory
 
-from apex_recurring_membership_payments.models.membership import Membership, MembershipStatus
-from apex_recurring_membership_payments.models.membership_charge import (
+from recurring_membership_payments.models.membership import Membership, MembershipStatus
+from recurring_membership_payments.models.membership_charge import (
     ChargeOutcome,
     ChargeSource,
     MembershipCharge,

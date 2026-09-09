@@ -9,7 +9,7 @@ from canvas_sdk.effects.launch_modal import LaunchModalEffect
 from canvas_sdk.handlers.application import Application
 
 _CACHE_BUST = str(int(datetime.now(timezone.utc).timestamp()))
-_CHART_PATH = "/plugin-io/api/apex_recurring_membership_payments/chart/"
+_CHART_PATH = "/plugin-io/api/recurring_membership_payments/chart/"
 
 
 class MembershipChartApp(Application):

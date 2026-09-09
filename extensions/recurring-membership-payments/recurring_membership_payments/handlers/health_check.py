@@ -26,25 +26,25 @@ from datetime import datetime, timezone
 from canvas_sdk.effects import Effect
 from canvas_sdk.handlers.cron_task import CronTask
 
-from apex_recurring_membership_payments.logic.membership_logic import (
+from recurring_membership_payments.logic.membership_logic import (
     failure_effects,
     remove_member_banner_effect,
 )
-from apex_recurring_membership_payments.logic.paytheory import (
+from recurring_membership_payments.logic.paytheory import (
     PayTheoryError,
     create_webhook,
     recurring_payments,
     update_webhook,
     webhooks,
 )
-from apex_recurring_membership_payments.models.membership import Membership, MembershipStatus
-from apex_recurring_membership_payments.models.membership_charge import (
+from recurring_membership_payments.models.membership import Membership, MembershipStatus
+from recurring_membership_payments.models.membership_charge import (
     ChargeOutcome,
     ChargeSource,
     MembershipCharge,
 )
 
-_WEBHOOK_NAME = "apex-membership-canvas"
+_WEBHOOK_NAME = "canvas-membership"
 
 # The filter step 31 hands to recurringPayments, read exactly as the
 # specification documents it. Whether "status" is an accepted key on this
@@ -136,7 +136,7 @@ class DailyHealthCheck(CronTask):
         if not public_url:
             return None
         secret = self.secrets.get("PAYTHEORY_WEBHOOK_SECRET") or ""
-        return f"{public_url}/plugin-io/api/apex_recurring_membership_payments/webhook/{secret}"
+        return f"{public_url}/plugin-io/api/recurring_membership_payments/webhook/{secret}"
 
     def _register_or_reactivate_webhook(self) -> None:
         """Step 30, create the webhook on first run or reactivate it once Pay Theory reports it inactive."""

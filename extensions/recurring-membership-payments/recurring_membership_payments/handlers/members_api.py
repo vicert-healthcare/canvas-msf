@@ -26,21 +26,22 @@ from canvas_sdk.effects.simple_api import HTMLResponse, JSONResponse, Response
 from canvas_sdk.handlers.simple_api import SimpleAPI, StaffSessionAuthMixin, api
 from canvas_sdk.templates import render_to_string
 
-from apex_recurring_membership_payments.logic.membership_logic import (
+from recurring_membership_payments.logic.membership_logic import (
     CANCEL_ELIGIBLE_STATUSES,
-    CANCEL_MESSAGES,
     CANCEL_NOT_ELIGIBLE,
     CANCEL_PROVIDER_UNREACHABLE,
+    CANCEL_REASON_MAX_LENGTH,
     CANCEL_TOO_EARLY,
-    CHARGES_BEFORE_CANCEL,
     cancel_membership,
+    cancel_message,
+    commitment_charges,
     charge_history_context,
     format_amount,
     format_iso_date,
     success_count_by_recurring_id,
 )
-from apex_recurring_membership_payments.models.membership import Membership, MembershipStatus
-from apex_recurring_membership_payments.models.membership_charge import (
+from recurring_membership_payments.models.membership import Membership, MembershipStatus
+from recurring_membership_payments.models.membership_charge import (
     ChargeOutcome,
     MembershipCharge,
 )
@@ -148,6 +149,7 @@ def _row(
     membership: Membership,
     charge: MembershipCharge | None,
     success_counts: dict[str, int],
+    charges_before_cancel: int,
 ) -> dict[str, Any]:
     """One member's row shape, per step 47 plus the history and cancel controls the redesign adds.
 
@@ -160,23 +162,31 @@ def _row(
     patient = membership.patient
     can_show_cancel = membership.status in CANCEL_ELIGIBLE_STATUSES
     successes = success_counts.get(membership.recurring_id, 0)
-    can_cancel = can_show_cancel and successes >= CHARGES_BEFORE_CANCEL
+    can_cancel = can_show_cancel and successes >= charges_before_cancel
+    # The early cancellation of the 2026-09-08 engineer direction. Staff may
+    # end a membership before its commitment is met and the patient may not,
+    # so on a members row the one control is live wherever the membership is
+    # cancellable at all and only its label changes with eligibility. That
+    # label is the whole signal the table gives about which memberships are
+    # still inside their commitment, which is why the alternative of one
+    # fixed label was rejected. is_early_cancel is what the page reads to
+    # decide which dialog wording to show and whether to ask for a reason.
+    is_early_cancel = can_show_cancel and not can_cancel
+    cancel_label = "End early" if is_early_cancel else "Cancel membership"
     # Why the button is disabled, worked out from what this row already holds
     # rather than from a query of its own. The chart panel prints its reason
     # as a line under the button and a table row has nowhere to put one, so
     # the row carries it as the control's own title instead. Empty when the
-    # button is live, because a tooltip on an enabled control is noise.
+    # button is live, because a tooltip on an enabled control is noise, which
+    # now includes every membership still inside its commitment, since those
+    # rows carry the End early label rather than a disabled control and a
+    # tooltip explaining a gate that no longer applies to staff.
     cancel_blocked_reason = ""
-    if not can_cancel:
+    if not can_show_cancel:
         if membership.status == MembershipStatus.ENDED:
             cancel_blocked_reason = "This membership has already ended."
-        elif membership.status == MembershipStatus.CANCELLING:
-            cancel_blocked_reason = "This membership is already cancelling."
         else:
-            cancel_blocked_reason = (
-                "Cancellation opens once the third charge has been taken, "
-                f"{successes} of {CHARGES_BEFORE_CANCEL} so far."
-            )
+            cancel_blocked_reason = "This membership is already cancelling."
     return {
         "patient_key": membership.patient_key,
         "first_name": patient.first_name if patient is not None else "",
@@ -191,11 +201,14 @@ def _row(
         "card_last_four": membership.card_last_four or "",
         "can_show_cancel": can_show_cancel,
         "can_cancel": can_cancel,
+        "is_early_cancel": is_early_cancel,
+        "cancel_label": cancel_label,
+        "successful_charges": successes,
         "cancel_blocked_reason": cancel_blocked_reason,
     }
 
 
-def _rows_context(request) -> dict[str, Any]:
+def _rows_context(request, charges_before_cancel: int) -> dict[str, Any]:
     """The whole of the members query, its filters, paging and per row disable state, per step 46.
 
     Held as a module level function taking the request object directly
@@ -263,7 +276,12 @@ def _rows_context(request) -> dict[str, Any]:
 
     return {
         "rows": [
-            _row(membership, newest_by_key.get(membership.patient_key), success_counts)
+            _row(
+                membership,
+                newest_by_key.get(membership.patient_key),
+                success_counts,
+                charges_before_cancel,
+            )
             for membership in page_rows
         ],
         "q": q,
@@ -271,6 +289,13 @@ def _rows_context(request) -> dict[str, Any]:
         "total": total,
         "page": page_number,
         "page_size": PAGE_SIZE,
+        # The commitment the early cancellation dialog names, carried once
+        # for the page rather than repeated on every row, since it is the
+        # same number for all of them, and the reason field's own limit
+        # beside it so the maxlength the page renders is the column's own
+        # length rather than a number typed twice.
+        "charges_before_cancel": charges_before_cancel,
+        "cancel_reason_max_length": CANCEL_REASON_MAX_LENGTH,
     }
 
 
@@ -291,7 +316,7 @@ class MembersAPI(StaffSessionAuthMixin, SimpleAPI):
         and which rows page in, so this only adds the cache busting query
         string the page's own script and stylesheet tags read.
         """
-        context = _rows_context(self.request)
+        context = _rows_context(self.request, commitment_charges(self.secrets))
         context["cache_bust"] = _CACHE_BUST
         html = render_to_string("templates/members.html", context)
         return [HTMLResponse(html, status_code=HTTPStatus.OK)]
@@ -303,7 +328,7 @@ class MembersAPI(StaffSessionAuthMixin, SimpleAPI):
         No cache_bust here, a fragment swapped into an already loaded page
         carries no script or stylesheet tag of its own to bust.
         """
-        context = _rows_context(self.request)
+        context = _rows_context(self.request, commitment_charges(self.secrets))
         html = render_to_string("templates/_members_rows.html", context)
         return [HTMLResponse(html, status_code=HTTPStatus.OK)]
 
@@ -336,6 +361,13 @@ class MembersAPI(StaffSessionAuthMixin, SimpleAPI):
         patient = membership.patient
         patient_name = f"{patient.first_name} {patient.last_name}" if patient is not None else ""
         context = charge_history_context(membership, patient_name=patient_name)
+        # Read straight off the row rather than through
+        # charge_history_context, because the portal page shares that
+        # function and the patient is deliberately never told that staff can
+        # override the commitment. Coalesced because the platform adds a new
+        # CustomModel column with the declared default stripped,
+        # plugin_runner/ddl.py, so a row older than the field reads None.
+        context["cancel_override_reason"] = membership.cancel_override_reason or ""
         context["patient_dob_display"] = _format_birth_date(
             patient.birth_date if patient is not None else None
         )
@@ -349,6 +381,14 @@ class MembersAPI(StaffSessionAuthMixin, SimpleAPI):
         Thin over the shared cancel_membership, cancelled_by staff, mapping
         the reason code it returns to a status through _CANCEL_STATUS_BY_REASON
         rather than repeating the check order here.
+
+        override_reason is read off the body and passed straight through, so
+        the early cancellation of the 2026-09-08 engineer direction lives in
+        cancel_membership and this route decides nothing about it. A blank or
+        absent reason is an ordinary cancellation and still meets the three
+        charge rule, which is why a staff member who somehow posts the early
+        path with no reason is refused by the same check as before rather
+        than by a new one here.
         """
         try:
             body = self.request.json()
@@ -363,11 +403,16 @@ class MembersAPI(StaffSessionAuthMixin, SimpleAPI):
                 )
             ]
 
-        reason = cancel_membership(self.secrets, patient_key=patient_key, cancelled_by="staff")
+        reason = cancel_membership(
+            self.secrets,
+            patient_key=patient_key,
+            cancelled_by="staff",
+            override_reason=(body or {}).get("override_reason") or "",
+        )
         if reason:
             return [
                 JSONResponse(
-                    {"error": CANCEL_MESSAGES[reason]},
+                    {"error": cancel_message(reason, commitment_charges(self.secrets))},
                     status_code=_CANCEL_STATUS_BY_REASON[reason],
                 )
             ]

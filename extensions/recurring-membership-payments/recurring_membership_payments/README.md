@@ -1,5 +1,5 @@
-Apex Recurring Membership Payments
-===================================
+Recurring Membership Payments
+=============================
 
 ## Description
 
@@ -46,6 +46,9 @@ webhook secret are sensitive values.
 
 - `MEMBERSHIP_PRICE_CENTS`, the monthly membership price in cents
 - `MEMBERSHIP_INTERVAL`, the billing interval Pay Theory bills on
+- `MEMBERSHIP_NAME`, what the subscription is called at Pay Theory
+- `COMMITMENT_CHARGES`, how many successful charges a membership commits to
+  before it can be cancelled, default 3
 - `FAILURE_TASK_ASSIGNEE_ID`, who a failed charge task is assigned to
 - `FAILURE_TASK_TEAM_ID`, which team a failed charge task is assigned to
 - `CANVAS_PUBLIC_URL`, this instance's own public address

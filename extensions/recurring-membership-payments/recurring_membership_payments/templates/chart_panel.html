@@ -34,8 +34,18 @@ this dict and is the only caller.
   cancelled_by_label        "The member" or "Staff", matching cancelled_by
   cancelled_display         the date cancellation was requested, formatted
   can_show_cancel            boolean, true on "ACTIVE" and "PAYMENT_FAILED"
-  can_cancel                  boolean, the three charge count
+  can_cancel                  boolean, the committed charge count
                          membership_logic already enforces server side
+  is_early_cancel              boolean, true when the membership can be
+                         cancelled but has not met its commitment, which is
+                         the staff early cancellation path
+  successful_charges           how many of the committed charges have been
+                         taken, shown on the early path
+  charges_before_cancel        how many the membership committed to
+  cancel_reason_max_length     the longest reason the field accepts, the
+                         column's own length
+  cancel_override_reason       why staff ended this membership early, ""
+                         on every ordinary cancellation
   cancel_opens_display         the projected or landed date cancellation
                          opens, shown whenever can_cancel is false
   patient_id                    the Canvas patient key, used only in the
@@ -51,12 +61,27 @@ template only.
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Membership</title>
   <link href="https://fonts.googleapis.com/css?family=Lato:400,700,400italic,700italic&subset=latin" rel="stylesheet">
-  <link rel="stylesheet" href="/plugin-io/api/apex_recurring_membership_payments/chart/canvas-plugin-ui.css?v={{ cache_bust }}">
-  <script src="/plugin-io/api/apex_recurring_membership_payments/chart/canvas-plugin-ui.js?v={{ cache_bust }}"></script>
+  <link rel="stylesheet" href="/plugin-io/api/recurring_membership_payments/chart/canvas-plugin-ui.css?v={{ cache_bust }}">
+  <script src="/plugin-io/api/recurring_membership_payments/chart/canvas-plugin-ui.js?v={{ cache_bust }}"></script>
   <style>
+    /* A filled badge and a basic one sit side by side on this page and they
+       are not the same height without this. The component gives a badge
+       border 0 solid transparent and its basic variant replaces that with
+       border 1px solid, and since a badge sets no height the border adds to
+       the box, so a basic badge comes out two pixels taller and wider than a
+       filled one at the same size. Giving the base a transparent border of
+       the same width puts both variants in the same box and leaves basic to
+       colour the border it already had. This is the component's own
+       documented token rather than a rule reaching into it, and the default
+       belongs in the design system rather than here. Set on the element
+       rather than on a root selector, both because it is the only element
+       that reads it and because bin/check-font-rules reads any :root block
+       as a base font declaration. */
+    canvas-badge {
+      --canvas-badge-border: 1px solid transparent;
+    }
     body {
       background: var(--palette-white);
-      font-family: var(--font-family, lato, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif);
     }
     .panel {
       padding: var(--space-medium);
@@ -105,26 +130,63 @@ template only.
 
       {% include "templates/_charge_history.html" %}
 
+      {% comment %}
+      The override trail, on this panel and on the members history modal and
+      nowhere else. It is read off the membership row rather than out of the
+      shared history context, because the portal page reads that same
+      context and the patient is deliberately never told that staff can
+      override the commitment.
+      {% endcomment %}
+      {% if cancel_override_reason %}
+        <p class="muted-line">Ended early by staff. Reason, {{ cancel_override_reason }}</p>
+      {% endif %}
+
       {% if can_show_cancel %}
         <canvas-divider></canvas-divider>
+        {% comment %}
+        The staff early cancellation of the 2026-09-08 engineer direction.
+        One control, live wherever the membership is cancellable at all, and
+        only its label changes with eligibility, the same shape the members
+        row carries so a staff member has the same power on both staff
+        surfaces. The line under it keeps both facts, how far into the
+        commitment this membership is and when cancellation would open on
+        its own, since a member who only has to wait one more charge is
+        worth telling rather than overriding.
+        {% endcomment %}
         <canvas-inline-row>
-          <canvas-button id="cancel-btn" variant="ghost" size="sm" {% if not can_cancel %}disabled{% endif %} onclick="document.getElementById('cancel-modal').open()">Cancel membership</canvas-button>
+          <canvas-button id="cancel-btn" variant="ghost" size="sm" onclick="document.getElementById('cancel-modal').open()">{% if is_early_cancel %}End early{% else %}Cancel membership{% endif %}</canvas-button>
         </canvas-inline-row>
-        {% if not can_cancel %}
-          <p class="muted-line">Cancellation opens once the third charge has been taken, around {{ cancel_opens_display }}.</p>
+        {% if is_early_cancel %}
+          <p class="muted-line">{{ successful_charges }} of {{ charges_before_cancel }} committed charges taken. Without an override, cancellation opens around {{ cancel_opens_display }}.</p>
         {% endif %}
       {% endif %}
     {% endif %}
   </div>
 
+  {% comment %}
+  Two copy paths, chosen on the server rather than toggled in the page,
+  because this panel renders one patient and re renders whole on every
+  refresh, unlike the members page where one dialog is retargeted from
+  whichever row opened it. The reason field exists only on the early path,
+  so the script's own presence test for it is what tells the two paths
+  apart with no second flag to keep in step. persistent stays, since the
+  early path now carries required entry and modals.md puts persistent
+  exactly there.
+  {% endcomment %}
   <canvas-modal id="cancel-modal" size="small" persistent>
-    <canvas-modal-header>Cancel membership</canvas-modal-header>
+    <canvas-modal-header>{% if is_early_cancel %}End membership early{% else %}Cancel membership{% endif %}</canvas-modal-header>
     <canvas-modal-content>
-      <p>This stops future charges right away for {{ patient_name }}. The membership stays active until the paid period ends, then it ends. Nothing is refunded.</p>
+      {% if is_early_cancel %}
+        <p>{{ patient_name }} has taken {{ successful_charges }} of {{ charges_before_cancel }} committed charges. Ending now waives the payments still owed on that commitment.</p>
+        <p>Future charges stop right away. The membership stays active until the paid period ends, then it ends. Nothing is refunded.</p>
+        <canvas-textarea id="cancel-reason" label="Reason" rows="3" maxlength="{{ cancel_reason_max_length }}" required placeholder="Why this membership is ending early"></canvas-textarea>
+      {% else %}
+        <p>This stops future charges right away for {{ patient_name }}. The membership stays active until the paid period ends, then it ends. Nothing is refunded.</p>
+      {% endif %}
     </canvas-modal-content>
     <canvas-modal-footer>
       <canvas-button variant="ghost" onclick="document.getElementById('cancel-modal').dismiss()">Keep membership</canvas-button>
-      <canvas-button id="confirm-cancel-btn" variant="danger">Cancel membership</canvas-button>
+      <canvas-button id="confirm-cancel-btn" variant="danger">{% if is_early_cancel %}End early{% else %}Cancel membership{% endif %}</canvas-button>
     </canvas-modal-footer>
   </canvas-modal>
 </div>
@@ -154,11 +216,24 @@ template only.
   }
 
   function handleConfirmCancel() {
-    fetch("/plugin-io/api/apex_recurring_membership_payments/chart/cancel", {
+    // Looked up at call time rather than held in a variable, because
+    // refreshApp below replaces the whole of #app and this modal sits
+    // inside it. The field's presence is what says this is the early
+    // path, and the reason is what records that an override happened
+    // rather than an ordinary cancellation, so a blank one keeps the
+    // dialog open instead of sending a request the server would refuse
+    // with the three charge rule.
+    var reasonField = document.getElementById("cancel-reason");
+    var overrideReason = reasonField ? reasonField.value.trim() : "";
+    if (reasonField && !overrideReason) {
+      reasonField.setAttribute("error", "Say why this membership is ending early.");
+      return;
+    }
+    fetch("/plugin-io/api/recurring_membership_payments/chart/cancel", {
       method: "POST",
       credentials: "same-origin",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ patient_id: patientId })
+      body: JSON.stringify({ patient_id: patientId, override_reason: overrideReason })
     })
       .then(function (response) {
         return response.json().catch(function () { return {}; }).then(function (data) {
@@ -182,6 +257,16 @@ template only.
   document.addEventListener("click", function (event) {
     if (event.target.id === "confirm-cancel-btn") {
       handleConfirmCancel();
+    }
+  });
+
+  // Delegated for the same reason the click is, the field is replaced
+  // whenever refreshApp runs. The error clears as soon as the staff member
+  // starts answering it rather than staying red until they press the
+  // action a second time.
+  document.addEventListener("input", function (event) {
+    if (event.target.id === "cancel-reason") {
+      event.target.removeAttribute("error");
     }
   });
 })();

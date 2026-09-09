@@ -909,6 +909,12 @@
             font-weight: var(--canvas-button-font-weight, var(--font-weight-bold, 700));
             font-family: var(--canvas-button-font-family, var(--font-family, lato, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif));
             line-height: 1.21428571em;
+            /* A label is one thing and never two lines. white-space inherits
+               across the shadow boundary, so a cell or a column that has been
+               told to wrap would otherwise wrap the label with it, and a
+               button reading View on one line and history on the next is what
+               a squeezed table row used to produce. */
+            white-space: nowrap;
             border: var(--canvas-button-border, 1px solid transparent);
             border-radius: var(--canvas-button-radius, var(--radius, .28571429rem));
             cursor: pointer;
@@ -7721,6 +7727,7 @@
         this.style.whiteSpace = 'nowrap';
         this.style.textAlign = 'right';
         this.style.width = '1%';
+        this._layoutActions();
       }
 
       if (this.hasAttribute('width')) {
@@ -7786,6 +7793,18 @@
       }
 
       var index = this.columnIndex();
+
+      /* The actions cell holds controls rather than a value, so nothing about
+         wrapping applies to it. It is never lifted into wrap, never measured
+         for the ceiling and never nominated to grow, whatever the table's
+         column lists say about its position. Without this exemption the
+         ceiling measured three buttons side by side as one long value, found
+         them wider than 320 pixels, and set the cell to wrap, which put every
+         button label onto two lines and a link onto three. The actions
+         attribute already fixed the cell's own white space, and the ceiling
+         ran a frame later and overrode it. */
+      if (this.hasAttribute('actions')) return;
+
       var wraps = table.columnList('wrap');
       var mine = wraps.indexOf(index) !== -1;
 
@@ -7868,10 +7887,58 @@
       return raw === '' ? '320px' : raw;
     }
 
+    /* The actions cell lays out its own controls. A table cell cannot be a
+       flex container while it stays a table cell, so the cell grows a shadow
+       root holding one flex row and slots its children into it. That row
+       right aligns the cluster, centres it vertically and puts the mini gap
+       between adjacent controls, the same gap DESIGN.md gives any two
+       interactive elements in a row. The whitespace between the tags in the
+       template is slotted too and a flex container drops whitespace only
+       runs, so the gap is exactly the declared one rather than the declared
+       one plus a space character.
+
+       Two delivered plugins had each written a div with a class and a style
+       rule for exactly this, because the default markup carried two buttons
+       separated by nothing but whitespace and the sibling spacing rule says a
+       gap nobody declared does not exist. The cell owning its own layout is
+       what makes the controls direct children with nothing to invent.
+
+       The one thing the cell knows about another component is the horizontal
+       inset of a small button. A plain link sitting between buttons takes that
+       same inset so the text to text distance matches on both sides of it,
+       and sm is the size a row action takes, component-usage.md Buttons. That
+       coupling lives here and nowhere else, so a change to the button's
+       padding has one place to follow. */
+    _layoutActions() {
+      if (this.shadowRoot) return;
+      this.attachShadow({ mode: 'open' });
+      this.shadowRoot.innerHTML = `
+        <style>
+          .cluster {
+            display: flex;
+            align-items: center;
+            justify-content: flex-end;
+            gap: var(--space-mini, 4px);
+            white-space: nowrap;
+          }
+
+          ::slotted(a) {
+            padding-inline: calc(1.125 * var(--canvas-button-font-size-sm, .92857143rem));
+          }
+        </style>
+        <div class="cluster" part="cluster"><slot></slot></div>
+      `;
+    }
+
     _applyCeiling() {
       /* A cell the table no longer holds is not worth measuring, and measuring
          a detached one reads zero and would clear a ceiling already applied. */
       if (!this.isConnected) return;
+
+      /* Belt and braces for the exemption in _applyColumnRules. A ceiling
+         scheduled before the attribute landed must still not fire on a cell
+         of controls. */
+      if (this.hasAttribute('actions')) return;
 
       var text = (this.textContent || '').trim();
       if (text.length < 36) return;
@@ -7917,6 +7984,14 @@
            wrap inside it. */
         this.style.width = ceiling + 'px';
         this.style.maxWidth = ceiling + 'px';
+        /* And a floor at the same number. A width alone is still a hint under
+           the automatic table layout, and in a table whose other columns
+           already fill the surface the browser takes the shortfall out of the
+           one column that can wrap, this one, which is how a capped value came
+           out at 105 pixels and fourteen lines beside a wide actions cell. The
+           floor makes the table overflow into its scroll area instead, which
+           is what every other rule here prefers to a column collapsing. */
+        this.style.minWidth = ceiling + 'px';
         this.style.whiteSpace = 'normal';
         /* break-word rather than word-break, so an ordinary sentence breaks at
            its spaces and only a single unbroken token is split mid string. */
@@ -7925,6 +8000,7 @@
         this.style.maxWidth = '';
         this.style.overflowWrap = '';
         if (this.style.width === ceiling + 'px') this.style.width = '';
+        if (this.style.minWidth === ceiling + 'px') this.style.minWidth = '';
       }
     }
 

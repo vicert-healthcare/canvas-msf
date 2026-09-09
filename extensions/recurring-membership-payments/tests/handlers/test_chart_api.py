@@ -14,9 +14,9 @@ from unittest.mock import patch
 
 import pytest
 
-from apex_recurring_membership_payments.handlers import chart_api
-from apex_recurring_membership_payments.logic import membership_logic
-from apex_recurring_membership_payments.models.membership import MembershipStatus
+from recurring_membership_payments.handlers import chart_api
+from recurring_membership_payments.logic import membership_logic
+from recurring_membership_payments.models.membership import MembershipStatus
 
 from tests.support import DummyEvent, DummyRequest, days_ago, make_membership, make_patient, make_successful_charges
 
@@ -48,9 +48,9 @@ def test_non_member_panel_offers_no_action():
 
 
 @pytest.mark.django_db
-def test_staff_cannot_cancel_inside_lock_in_either():
+def test_staff_cancel_with_no_reason_is_refused_inside_commitment():
     """Covers criterion: AC23
-    Covers scenario: AC23, staff cannot cancel inside the 90 day lock in either
+    Covers scenario: AC23, a staff cancellation carrying no reason is still refused inside the commitment
     """
     patient = make_patient()
     membership = make_membership(
@@ -62,8 +62,14 @@ def test_staff_cannot_cancel_inside_lock_in_either():
     index_result = index_api.index()
     body = index_result[0].content
     assert b'id="cancel-btn"' in body
-    assert b"disabled" in body
-    assert b"Cancellation opens" in body
+    # AC23 was corrected in specification version 6 to state exactly this.
+    # The control is live and labelled End early rather than disabled, and
+    # the line under it names the commitment instead of a gate, which the
+    # staff early cancellation of AC30 to AC33 is what changed. The half of
+    # AC23 that never moved is the server's, asserted below, a cancel with
+    # no override reason is refused and never reaches the provider.
+    assert b">End early</canvas-button>" in body
+    assert b"0 of 3 committed charges taken" in body
 
     with patch.object(membership_logic, "cancel_recurring_payment") as mock_cancel:
         cancel_api = _api("POST", "/chart/cancel")

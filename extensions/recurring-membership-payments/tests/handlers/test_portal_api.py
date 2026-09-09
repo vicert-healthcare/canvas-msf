@@ -18,11 +18,11 @@ from unittest.mock import patch
 
 import pytest
 
-from apex_recurring_membership_payments.handlers import portal_api
-from apex_recurring_membership_payments.logic import membership_logic
-from apex_recurring_membership_payments.logic.paytheory import PayTheoryError
-from apex_recurring_membership_payments.models.membership import Membership, MembershipStatus
-from apex_recurring_membership_payments.models.membership_charge import MembershipCharge
+from recurring_membership_payments.handlers import portal_api
+from recurring_membership_payments.logic import membership_logic
+from recurring_membership_payments.logic.paytheory import PayTheoryError
+from recurring_membership_payments.models.membership import Membership, MembershipStatus
+from recurring_membership_payments.models.membership_charge import MembershipCharge
 from canvas_sdk.effects.effect import EffectType
 
 from tests.support import (
@@ -150,7 +150,10 @@ def test_join_creates_subscription_with_no_first_payment_date_and_records_member
     assert kwargs["payment_interval"] == "MONTHLY"
     assert kwargs["payment_method_id"] == "PM1"
     assert kwargs["payor_id"] == "P1"
-    assert kwargs["recurring_name"] == "Apex membership"
+    # The default, since this test's secrets declare no MEMBERSHIP_NAME. What
+    # the assertion protects is that a name is always sent, because an unnamed
+    # subscription at the provider is what a practice reads on their dashboard.
+    assert kwargs["recurring_name"] == "Practice membership"
     assert "first_payment_date" not in kwargs
 
     membership = Membership.objects.get(patient_key=patient.id)
@@ -246,6 +249,54 @@ def test_cancelling_inside_lock_in_is_refused_and_button_disabled():
     assert b'id="cancel-btn"' in body
     assert b"disabled" in body
     assert b"Cancellation opens" in body
+
+
+@pytest.mark.django_db
+def test_commitment_is_whatever_the_instance_declares():
+    """Covers criterion: AC34
+    Covers scenario: AC34, the commitment is whatever the instance declares rather than a fixed three
+
+    Driven at two rather than the default three on purpose, because a test
+    that used three would pass just as well against the constant this
+    replaced and would prove nothing about the variable being read.
+    """
+    patient = make_patient()
+    membership = make_membership(
+        patient=patient,
+        status=MembershipStatus.ACTIVE,
+        enrolled_at=days_ago(60),
+        next_payment_date="2026-10-09",
+    )
+    make_successful_charges(membership, 1)
+    secrets = {"COMMITMENT_CHARGES": "2"}
+
+    with patch.object(membership_logic, "cancel_recurring_payment") as mock_cancel:
+        api = _api("POST", "/portal/cancel", secrets=secrets)
+        api.request = DummyRequest(headers={"canvas-logged-in-user-id": patient.id})
+        refused = api.cancel()
+        mock_cancel.assert_not_called()
+
+    assert refused[0].status_code == HTTPStatus.FORBIDDEN
+    assert json.loads(refused[0].content)["error"] == (
+        "Cancellation opens once the second charge has been taken."
+    )
+    membership.refresh_from_db()
+    assert membership.status == MembershipStatus.ACTIVE
+
+    # Exactly one more, so the membership sits on two successful charges and
+    # not three. Three would be allowed by the constant this replaced as well,
+    # which would have left this half of the test proving nothing.
+    make_charge(membership, transaction_id=f"T-{membership.patient_key}-second")
+    assert MembershipCharge.objects.filter(patient_key=patient.id).count() == 2
+
+    with patch.object(membership_logic, "cancel_recurring_payment", return_value=True):
+        api = _api("POST", "/portal/cancel", secrets=secrets)
+        api.request = DummyRequest(headers={"canvas-logged-in-user-id": patient.id})
+        allowed = api.cancel()
+
+    assert allowed[0].status_code == HTTPStatus.OK
+    membership.refresh_from_db()
+    assert membership.status == MembershipStatus.CANCELLING
 
 
 @pytest.mark.django_db

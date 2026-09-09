@@ -15,10 +15,10 @@ import pytest
 from canvas_sdk.handlers.simple_api import SessionCredentials
 from canvas_sdk.handlers.simple_api.exceptions import InvalidCredentialsError
 
-from apex_recurring_membership_payments.handlers import members_api
-from apex_recurring_membership_payments.logic import membership_logic
-from apex_recurring_membership_payments.models.membership import MembershipStatus
-from apex_recurring_membership_payments.models.membership_charge import ChargeOutcome
+from recurring_membership_payments.handlers import members_api
+from recurring_membership_payments.logic import membership_logic
+from recurring_membership_payments.models.membership import MembershipStatus
+from recurring_membership_payments.models.membership_charge import ChargeOutcome
 
 from tests.support import (
     DummyEvent,
@@ -94,12 +94,20 @@ def test_members_page_lists_every_member_with_the_redesigned_columns_and_row_con
     # cluster right and the column stops scanning as a column. The control is
     # disabled rather than absent, and it says why.
     assert body.count(b'data-action="cancel-membership"') == 3
-    assert body.count(b"disabled") == 3
+    # Counted on the attribute pair the row actually renders rather than on the
+    # bare word, which also appears in this page's comments and in its own
+    # click guard, so the count measured the document instead of the controls
+    # and moved whenever either was edited.
+    #
+    # One disabled control rather than three, which AC20 was corrected to
+    # state in specification version 6. The ended membership is the only one
+    # left that staff cannot act on, and the two inside their commitment
+    # carry a live End early control instead of a disabled one explaining a
+    # gate that no longer applies to staff, AC30 to AC33.
+    assert body.count(b"disabled title=") == 1
     assert body.count(b"This membership has already ended.") == 1
-    assert (
-        body.count(b"Cancellation opens once the third charge has been taken, 0 of 3 so far.")
-        == 2
-    )
+    assert body.count(b">End early</canvas-button>") == 2
+    assert body.count(b'data-early="1"') == 2
 
 
 @pytest.mark.django_db

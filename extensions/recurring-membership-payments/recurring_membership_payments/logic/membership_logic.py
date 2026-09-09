@@ -32,12 +32,12 @@ from canvas_sdk.effects.note.message import Message
 from canvas_sdk.effects.task.task import AddTask, AddTaskComment, TaskStatus, UpdateTask
 from canvas_sdk.v1.data.staff import Staff
 
-from apex_recurring_membership_payments.logic.paytheory import (
+from recurring_membership_payments.logic.paytheory import (
     PayTheoryError,
     cancel_recurring_payment,
 )
-from apex_recurring_membership_payments.models.membership import Membership, MembershipStatus
-from apex_recurring_membership_payments.models.membership_charge import (
+from recurring_membership_payments.models.membership import Membership, MembershipStatus
+from recurring_membership_payments.models.membership_charge import (
     ChargeOutcome,
     MembershipCharge,
 )
@@ -46,17 +46,85 @@ MEMBER_BANNER_KEY = "membership-member"
 PAYMENT_FAILED_BANNER_KEY = "membership-payment-failed"
 
 # The number of successful charges a membership has to have taken before
-# either the patient or staff may cancel it, step 11 and step 12. The
+# either the patient or staff may cancel it, step 11 and step 12. The first
 # practice hears this as a ninety day minimum because three monthly charges
 # buy exactly ninety days, but the count is what the code and the server
 # enforce, never an elapsed day.
-CHARGES_BEFORE_CANCEL = 3
+#
+# It is a plugin variable rather than a constant, because the commitment is
+# the one rule of this plugin a practice sets for itself and the next one
+# will not want three. The default below is what an instance that declares
+# nothing runs on, and it is deliberately the original three rather than
+# zero, since a missing value should keep the commitment rather than
+# silently retire it.
+DEFAULT_COMMITMENT_CHARGES = 3
+COMMITMENT_CHARGES_SECRET = "COMMITMENT_CHARGES"
+
+_ORDINAL_WORDS = {
+    1: "first",
+    2: "second",
+    3: "third",
+    4: "fourth",
+    5: "fifth",
+    6: "sixth",
+    7: "seventh",
+    8: "eighth",
+    9: "ninth",
+    10: "tenth",
+    11: "eleventh",
+    12: "twelfth",
+}
+
+
+def commitment_charges(secrets: dict) -> int:
+    """The number of successful charges a membership commits to, read off the instance.
+
+    Every caller that decides whether a cancel is allowed resolves this once
+    at its own boundary and passes the number down, so nothing below holds
+    an opinion about where the number came from. A value that is absent,
+    unparseable or below one falls back to DEFAULT_COMMITMENT_CHARGES,
+    because a zero here would retire the commitment for the whole practice
+    and a typo should not be able to do that quietly.
+    """
+    raw = (secrets.get(COMMITMENT_CHARGES_SECRET) or "").strip()
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_COMMITMENT_CHARGES
+    return value if value >= 1 else DEFAULT_COMMITMENT_CHARGES
+
+
+def ordinal(count: int) -> str:
+    """The word form of a small ordinal, so the refusal sentence reads the way it always did.
+
+    Written out to twelve because that is as far as a monthly commitment
+    plausibly runs and the words read better than the digits. Above that it
+    falls back to the digit form with the right suffix, including the teens,
+    which take th whatever their last digit is.
+    """
+    if count in _ORDINAL_WORDS:
+        return _ORDINAL_WORDS[count]
+    suffix = "th"
+    if count % 100 not in (11, 12, 13):
+        suffix = {1: "st", 2: "nd", 3: "rd"}.get(count % 10, "th")
+    return f"{count}{suffix}"
 
 # The two statuses a membership has to be in before either a patient or
 # staff may cancel it, read by every surface that decides whether a cancel
 # control shows at all, the chart panel, the portal page and the members
 # page row, and by cancel_membership itself before it reaches the provider.
 CANCEL_ELIGIBLE_STATUSES = (MembershipStatus.ACTIVE, MembershipStatus.PAYMENT_FAILED)
+
+# The longest cancellation override reason a staff member can type. Matches
+# the max_length of Membership.cancel_override_reason and the maxlength both
+# staff dialogs put on their reason field, so the character counter the
+# component renders is the same limit the column holds and nothing a staff
+# member can type is ever cut. A reason arriving longer than this can only
+# come from a caller that is not one of those two dialogs, and it is
+# truncated here rather than refused, because losing the tail of an
+# explanation is a smaller harm than refusing a cancellation the staff
+# member has already decided on.
+CANCEL_REASON_MAX_LENGTH = 200
 
 # The label a chart or a members page reader sees for who cancelled a
 # membership, patient facing text never shows cancelled_by at all so this
@@ -76,9 +144,20 @@ CANCEL_PROVIDER_UNREACHABLE = "provider_unreachable"
 # reads CANCEL_MESSAGES[reason] rather than restating any of these itself.
 CANCEL_MESSAGES = {
     CANCEL_NOT_ELIGIBLE: "This membership cannot be cancelled.",
-    CANCEL_TOO_EARLY: "Cancellation opens once the third charge has been taken.",
+    CANCEL_TOO_EARLY: "Cancellation opens once the {ordinal} charge has been taken.",
     CANCEL_PROVIDER_UNREACHABLE: "The payment provider could not be reached. Nothing was changed.",
 }
+
+
+def cancel_message(reason: str, charges_before_cancel: int) -> str:
+    """The sentence a refused cancel shows, with the commitment count worded into the early one.
+
+    Every route reads this rather than indexing CANCEL_MESSAGES itself, so
+    the one message that has to name a number gets it from the same value
+    the check used, and the other two pass through unchanged because they
+    carry no placeholder.
+    """
+    return CANCEL_MESSAGES[reason].format(ordinal=ordinal(charges_before_cancel))
 
 _INTERVAL_DAYS = {
     "WEEKLY": 7,
@@ -151,8 +230,8 @@ def _advance_date(date_string: str, interval: str, periods: int) -> str:
     """Advance an ISO date string forward by a number of periods of the given interval.
 
     This is the one value the specification names as computed rather than
-    read, the projected date shown before a membership has taken its third
-    charge, step 11.
+    read, the projected date shown before a membership has met its
+    commitment, step 11.
     """
     date = datetime.strptime(date_string, "%Y-%m-%d").date()
     if periods <= 0:
@@ -198,19 +277,21 @@ def success_count_by_recurring_id(recurring_ids: list[str]) -> dict[str, int]:
     return counts
 
 
-def can_cancel(membership) -> bool:
+def can_cancel(membership, charges_before_cancel: int) -> bool:
     """Whether the membership has taken enough successful charges to be cancelled.
 
     Step 11 and step 12 read the same count, so the button the patient or
-    staff sees and the check the server enforces never disagree.
+    staff sees and the check the server enforces never disagree. The count
+    is passed in rather than read here, so a route cannot render a button
+    against one commitment while the server enforces another.
     """
-    return successful_charge_count(membership) >= CHARGES_BEFORE_CANCEL
+    return successful_charge_count(membership) >= charges_before_cancel
 
 
-def cancellation_opens_on(membership) -> str:
-    """The date cancellation opens, the third charge's own date once it has landed, otherwise projected.
+def cancellation_opens_on(membership, charges_before_cancel: int) -> str:
+    """The date cancellation opens, the committed charge's own date once it has landed, otherwise projected.
 
-    Before the third charge, the date is projected forward from
+    Before the commitment is met, the date is projected forward from
     next_payment_date by the number of charges still owed, using the
     subscription's own payment_interval, per step 11.
     """
@@ -220,9 +301,9 @@ def cancellation_opens_on(membership) -> str:
             outcome=ChargeOutcome.SUCCESS,
         ).order_by("received_at")
     )
-    if len(charges) >= CHARGES_BEFORE_CANCEL:
-        return charges[CHARGES_BEFORE_CANCEL - 1].transaction_date
-    charges_owed = CHARGES_BEFORE_CANCEL - len(charges)
+    if len(charges) >= charges_before_cancel:
+        return charges[charges_before_cancel - 1].transaction_date
+    charges_owed = charges_before_cancel - len(charges)
     return _advance_date(membership.next_payment_date, membership.payment_interval, charges_owed)
 
 
@@ -305,7 +386,9 @@ def charge_history_context(
     return context
 
 
-def cancel_membership(secrets: dict, *, patient_key: str, cancelled_by: str) -> str:
+def cancel_membership(
+    secrets: dict, *, patient_key: str, cancelled_by: str, override_reason: str = ""
+) -> str:
     """Cancel one patient's membership, patient or staff initiated, empty string on success or a reason code otherwise.
 
     Runs the checks in the order the chart route has always run them, the
@@ -318,11 +401,24 @@ def cancel_membership(secrets: dict, *, patient_key: str, cancelled_by: str) -> 
     here, staff from the chart and the members page, patient from the
     portal, so this function carries no opinion about which surface called
     it.
+
+    override_reason is the staff early cancellation, from the engineer
+    direction of 2026-09-08 at 00-inputs. A non empty reason skips the
+    can_cancel check and nothing else, so the status check still runs
+    first, the provider is still reached only after it passes, and a
+    membership that has already ended or is already cancelling is still
+    refused. The override is implied by the reason rather than declared by
+    a flag beside it, which is why there is one argument here and one
+    column on the row, with no second value that could disagree with it.
+    It is staff only by construction rather than by a check, the portal
+    route never passes this argument at all and both routes that do carry
+    StaffSessionAuthMixin.
     """
+    override_reason = (override_reason or "").strip()[:CANCEL_REASON_MAX_LENGTH]
     membership = Membership.objects.filter(patient_key=patient_key).first()
     if membership is None or membership.status not in CANCEL_ELIGIBLE_STATUSES:
         return CANCEL_NOT_ELIGIBLE
-    if not can_cancel(membership):
+    if not override_reason and not can_cancel(membership, commitment_charges(secrets)):
         return CANCEL_TOO_EARLY
 
     try:
@@ -337,6 +433,7 @@ def cancel_membership(secrets: dict, *, patient_key: str, cancelled_by: str) -> 
     membership.status = MembershipStatus.CANCELLING
     membership.cancelled_at = now
     membership.cancelled_by = cancelled_by
+    membership.cancel_override_reason = override_reason
     membership.ends_at = membership.next_payment_date
     membership.updated_at = now
     membership.save()

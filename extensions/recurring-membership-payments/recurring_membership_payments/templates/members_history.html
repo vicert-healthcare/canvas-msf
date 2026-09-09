@@ -18,6 +18,8 @@ caller.
   cancelled_by_label     "The member" or "Staff", matching cancelled_by
   cancelled_display      the date cancellation was requested, formatted
   ends_display           the date the membership ends, formatted
+  cancel_override_reason why staff ended this membership early, "" on
+                          every ordinary cancellation
 
 No other context key is read. This fragment carries no doctype, no head
 and no script of its own, since it is fetched and written into a body
@@ -73,3 +75,14 @@ table's own empty block would say the same thing twice.
 </div>
 
 {% include "templates/_charge_history.html" %}
+
+{% comment %}
+The override trail, on this dialog and on the chart panel and nowhere
+else. It is read off the membership row rather than out of the shared
+history context, because the portal page reads that same context and the
+patient is deliberately never told that staff can override the
+commitment.
+{% endcomment %}
+{% if cancel_override_reason %}
+  <p style="margin: var(--space-medium) 0 0; color: var(--color-text-muted, #767676)">Ended early by staff. Reason, {{ cancel_override_reason }}</p>
+{% endif %}

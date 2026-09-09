@@ -12,9 +12,9 @@ from unittest.mock import patch
 
 import pytest
 
-from apex_recurring_membership_payments.handlers import health_check
-from apex_recurring_membership_payments.models.membership import MembershipStatus
-from apex_recurring_membership_payments.models.membership_charge import (
+from recurring_membership_payments.handlers import health_check
+from recurring_membership_payments.models.membership import MembershipStatus
+from recurring_membership_payments.models.membership_charge import (
     ChargeOutcome,
     ChargeSource,
     MembershipCharge,
@@ -47,7 +47,7 @@ def test_daily_health_check_reactivates_webhook_reconciles_failures_and_ends_can
     task = health_check.DailyHealthCheck(
         event=None,
         secrets={
-            "CANVAS_PUBLIC_URL": "https://apex.canvasmedical.com",
+            "CANVAS_PUBLIC_URL": "https://example.canvasmedical.com",
             "PAYTHEORY_WEBHOOK_SECRET": "s3cret",
             "FAILURE_TASK_ASSIGNEE_ID": staff.id,
         },

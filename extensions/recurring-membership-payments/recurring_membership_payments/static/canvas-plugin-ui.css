@@ -76,6 +76,37 @@
    Plugin iframes do not inherit the parent page's fonts.
    Lato is loaded via a <link> tag in head.html. */
 
+/* The document font, applied here so no plugin has to declare it.
+   Without this rule plain text carries no font-family at all and Chrome
+   renders it in Times New Roman, since the fallback chain in the token is
+   only reached by whatever references the token. A plugin never writes a
+   base font rule of its own, see references/setup.md. */
+
+html, body {
+  font-family: var(--font-family, lato, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif);
+}
+
+/* Native form controls do not inherit font-family from the document in any
+   browser, they carry a UA font instead, so they are opted in explicitly.
+   Monospace elements are left alone, pre and code are meant to differ. */
+
+button, input, select, textarea, optgroup, option {
+  font-family: inherit;
+}
+
+/* An inline icon is the size it declares. Every icon in this system is an
+   svg carrying width and height attributes, and most of them sit in a flex
+   line, after a link label, inside a button, beside a value. A flex item
+   with no say of its own may be shrunk when the line is squeezed, and an
+   icon that comes out at whatever size the line had left is what a wrapped
+   row looked like. Stated once here so no template has to remember it, the
+   same reason the document font sits above. A graphic meant to scale with
+   its container declares no width and height attributes and is untouched. */
+
+svg[width][height] {
+  flex: none;
+}
+
 h1, h2, h3, h4, h5 {
   margin: calc(2rem - .14285714em) 0 1rem;
   font-family: var(--font-family, lato, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif);

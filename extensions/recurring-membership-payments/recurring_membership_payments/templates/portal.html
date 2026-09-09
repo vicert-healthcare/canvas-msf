@@ -26,6 +26,14 @@ these keys.
                           "CANCELLING". "join" covers both no Membership row
                           and a row whose status is ENDED, step 4's own
                           grouping
+  patient_email          the patient's highest ranked email address, or an
+                          empty string when there is none, sent to Pay Theory
+                          beside the name when it has a value and never
+                          rendered as text
+  patient_full_name      the patient's name as one string, split on the
+                          first space into the first_name and last_name Pay
+                          Theory's payor info object actually reads, never
+                          rendered as text
   payor_id               the row's payor_id, or an empty string when there
                           is none yet, read regardless of membership_state
                           since an ended row can still carry one
@@ -38,10 +46,13 @@ these keys.
                           "ACTIVE" and "PAYMENT_FAILED", empty otherwise
   ends_display             the date the membership ends, formatted, shown
                           on "CANCELLING", empty otherwise
-  can_cancel               boolean, the three charge count membership_logic
+  can_cancel               boolean, the committed charge count membership_logic
                           already enforces server side
   cancel_opens_display     the projected or landed date cancellation opens,
                           formatted, shown whenever can_cancel is false
+  commitment_ordinal       the committed charge count as a word, first,
+                          second, third, so both sentences that name the
+                          commitment read as prose
   cancelled_by             "patient", "staff" or an empty string when the
                           membership was never cancelled
   cancelled_display        the date cancellation was requested, formatted,
@@ -65,17 +76,32 @@ template only.
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Membership</title>
   <link href="https://fonts.googleapis.com/css?family=Lato:400,700,400italic,700italic&subset=latin" rel="stylesheet">
-  <link rel="stylesheet" href="/plugin-io/api/apex_recurring_membership_payments/portal/canvas-plugin-ui.css?v={{ cache_bust }}">
-  <script src="/plugin-io/api/apex_recurring_membership_payments/portal/canvas-plugin-ui.js?v={{ cache_bust }}"></script>
+  <link rel="stylesheet" href="/plugin-io/api/recurring_membership_payments/portal/canvas-plugin-ui.css?v={{ cache_bust }}">
+  <script src="/plugin-io/api/recurring_membership_payments/portal/canvas-plugin-ui.js?v={{ cache_bust }}"></script>
   {% comment %}
   Guarded, because an unconfigured instance would render src="" here, which the
   browser resolves to this page's own address and fetches back as a script.
   {% endcomment %}
   {% if payments_configured %}<script src="{{ paytheory_sdk_url }}"></script>{% endif %}
   <style>
+    /* A filled badge and a basic one sit side by side on this page and they
+       are not the same height without this. The component gives a badge
+       border 0 solid transparent and its basic variant replaces that with
+       border 1px solid, and since a badge sets no height the border adds to
+       the box, so a basic badge comes out two pixels taller and wider than a
+       filled one at the same size. Giving the base a transparent border of
+       the same width puts both variants in the same box and leaves basic to
+       colour the border it already had. This is the component's own
+       documented token rather than a rule reaching into it, and the default
+       belongs in the design system rather than here. Set on the element
+       rather than on a root selector, both because it is the only element
+       that reads it and because bin/check-font-rules reads any :root block
+       as a base font declaration. */
+    canvas-badge {
+      --canvas-badge-border: 1px solid transparent;
+    }
     body {
       background: var(--palette-white);
-      font-family: var(--font-family, lato, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif);
     }
     .membership-page {
       padding: var(--space-huge);
@@ -132,7 +158,7 @@ template only.
         {% if interval_code == "WEEKLY" %}week{% elif interval_code == "BI_WEEKLY" %}two weeks{% elif interval_code == "QUARTERLY" %}3 months{% elif interval_code == "BI_ANNUAL" %}6 months{% elif interval_code == "ANNUAL" %}year{% else %}month{% endif %},
         charged today and on this day every
         {% if interval_code == "WEEKLY" %}week{% elif interval_code == "BI_WEEKLY" %}two weeks{% elif interval_code == "QUARTERLY" %}3 months{% elif interval_code == "BI_ANNUAL" %}6 months{% elif interval_code == "ANNUAL" %}year{% else %}month{% endif %}
-        after until you cancel. Cancellation opens once the third charge has been taken.
+        after until you cancel. Cancellation opens once the {{ commitment_ordinal }} charge has been taken.
       </p>
 
       {% include "templates/_card_fields.html" %}
@@ -169,10 +195,10 @@ template only.
       {% if membership_state == "ACTIVE" or membership_state == "PAYMENT_FAILED" %}
         <canvas-divider></canvas-divider>
         <canvas-inline-row>
-          <canvas-button id="cancel-btn" variant="ghost" {% if not can_cancel %}disabled{% endif %} onclick="document.getElementById('cancel-modal').open()">Cancel membership</canvas-button>
+          <canvas-button id="cancel-btn" variant="ghost" {% if not can_cancel %}disabled{% endif %} onclick="if (!this.hasAttribute('disabled')) document.getElementById('cancel-modal').open()">Cancel membership</canvas-button>
         </canvas-inline-row>
         {% if not can_cancel %}
-          <p class="muted-line">Cancellation opens once your third charge has been taken, around {{ cancel_opens_display }}.</p>
+          <p class="muted-line">Cancellation opens once your {{ commitment_ordinal }} charge has been taken, around {{ cancel_opens_display }}.</p>
         {% endif %}
       {% endif %}
 
@@ -205,6 +231,8 @@ template only.
 (function () {
   "use strict";
 
+  var patientFullName = "{{ patient_full_name|escapejs }}";
+  var patientEmail = "{{ patient_email|escapejs }}";
   var patientKey = "{{ patient_key }}";
   var payorId = "{{ payor_id }}";
 
@@ -287,7 +315,39 @@ template only.
     }
     var params = { metadata: { canvas_patient_id: patientKey } };
     if (payorId) {
+      // A returning member already has a payor at Pay Theory, so reuse it and
+      // send no payorInfo, which is what keeps them as one payor rather than
+      // accumulating a new one on every card they ever enter.
       params.payorId = payorId;
+    } else {
+      // A first time joiner has none, and Pay Theory mints one during
+      // tokenization, so the name goes in here, at the only moment the
+      // provider is willing to take it, and a payor minted without one is
+      // refused by createRecurringPayment later.
+      //
+      // Pay Theory's payor info object has no full name field. The string
+      // full_name appears nowhere in the SDK bundle or in the hosted field
+      // bundles behind it, read off their own source maps on 2026-09-08, and
+      // the SDK forwards a key it does not recognise without complaint rather
+      // than rejecting it. So full_name reached the provider, was ignored,
+      // minted a payor carrying no name, and createRecurringPayment then
+      // refused that payor with Invalid payor, full name required. The two
+      // keys it does read are first_name and last_name, and the split below
+      // on the first space is Pay Theory's own rule, the one its hosted
+      // fields apply to the card name field when payorInfo is same_as_billing.
+      var nameParts = patientFullName.split(" ");
+      var firstName = nameParts.shift() || "";
+      var lastName = nameParts.join(" ");
+      params.payorInfo = { first_name: firstName, last_name: lastName };
+      // Sent when the practice holds one, absent when it does not, and never
+      // asked for. The provider's own emails are muted for this subscription,
+      // so it does not require an address, and this is only here so a payor is
+      // identifiable to somebody reading Pay Theory's dashboard. The key stays
+      // absent rather than empty, since the SDK validates the format of an
+      // address it is given and an empty string is not a valid one.
+      if (patientEmail) {
+        params.payorInfo.email = patientEmail;
+      }
     }
     paytheory.tokenizePaymentMethod(params).then(function (result) {
       if (result && result.type === "TOKENIZED") {
@@ -322,7 +382,7 @@ template only.
     }
     hidePageError();
     tokenize(function (body) {
-      postJson("/plugin-io/api/apex_recurring_membership_payments/portal/join", {
+      postJson("/plugin-io/api/recurring_membership_payments/portal/join", {
         consent: true,
         payment_method_id: body.payment_method_id,
         payor_id: body.payor_id,
@@ -341,7 +401,7 @@ template only.
   function handleSavePay() {
     hidePageError();
     tokenize(function (body) {
-      postJson("/plugin-io/api/apex_recurring_membership_payments/portal/payment-method", {
+      postJson("/plugin-io/api/recurring_membership_payments/portal/payment-method", {
         payment_method_id: body.payment_method_id,
         payor_id: body.payor_id,
         last_four: body.last_four,
@@ -358,7 +418,7 @@ template only.
 
   function handleConfirmCancel() {
     hidePageError();
-    postJson("/plugin-io/api/apex_recurring_membership_payments/portal/cancel", {}).then(function (result) {
+    postJson("/plugin-io/api/recurring_membership_payments/portal/cancel", {}).then(function (result) {
       document.getElementById("cancel-modal").dismiss();
       if (result.ok) {
         refreshApp();

@@ -5,9 +5,25 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Members</title>
   <link href="https://fonts.googleapis.com/css?family=Lato:400,700,400italic,700italic&subset=latin" rel="stylesheet">
-  <link rel="stylesheet" href="/plugin-io/api/apex_recurring_membership_payments/members/canvas-plugin-ui.css?v={{ cache_bust }}">
-  <script src="/plugin-io/api/apex_recurring_membership_payments/members/canvas-plugin-ui.js?v={{ cache_bust }}"></script>
+  <link rel="stylesheet" href="/plugin-io/api/recurring_membership_payments/members/canvas-plugin-ui.css?v={{ cache_bust }}">
+  <script src="/plugin-io/api/recurring_membership_payments/members/canvas-plugin-ui.js?v={{ cache_bust }}"></script>
   <style>
+    /* A filled badge and a basic one sit side by side on this page and they
+       are not the same height without this. The component gives a badge
+       border 0 solid transparent and its basic variant replaces that with
+       border 1px solid, and since a badge sets no height the border adds to
+       the box, so a basic badge comes out two pixels taller and wider than a
+       filled one at the same size. Giving the base a transparent border of
+       the same width puts both variants in the same box and leaves basic to
+       colour the border it already had. This is the component's own
+       documented token rather than a rule reaching into it, and the default
+       belongs in the design system rather than here. Set on the element
+       rather than on a root selector, both because it is the only element
+       that reads it and because bin/check-font-rules reads any :root block
+       as a base font declaration. */
+    canvas-badge {
+      --canvas-badge-border: 1px solid transparent;
+    }
     /* Plugin specific layout only. Every value below is a design system token. */
     html, body {
       height: 100%;
@@ -15,7 +31,6 @@
     body {
       margin: 0;
       background: var(--palette-white, #ffffff);
-      font-family: var(--font-family, lato, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif);
       /* The document never grows past one viewport, the page container
          below scrolls in its place. Both dialogs at the end of this body
          position their backdrop fixed, which inside an iframe resolves
@@ -75,9 +90,6 @@
        between those two is untouched. The phrase the link itself reads is
        deliberately not repeated here, because AC20 counts that string in
        the rendered page and a comment carrying it would inflate the count. */
-    .row-actions a {
-      padding-inline: calc(1.125 * var(--canvas-button-font-size-sm, .92857143rem));
-    }
     .result-count {
       margin: 0 0 var(--space-small);
       color: var(--color-text-muted, #767676);
@@ -94,11 +106,26 @@
       gap: var(--space-small);
       margin-top: var(--space-medium);
     }
-    .row-actions {
-      display: flex;
-      align-items: center;
-      justify-content: flex-end;
-      gap: var(--space-mini);
+    /* The cancel control is the one thing in the actions cell whose label
+       changes between rows, End early inside the commitment and Cancel
+       membership after it, and a control that changes width pulls the whole
+       cluster sideways so the actions column stops being a column and the
+       eye has to find each button in a new place on every row. That is the
+       reason tables.md gives for never omitting a control from a row, and a
+       varying label does the same damage. So the box is sized once to the
+       longer of the two labels and the shorter one sits inside it.
+
+       10.5rem is 168 pixels at a 16 pixel root, read off the rendered
+       component rather than picked. Cancel membership at the sm button's own
+       .92857143rem font size and 1.125em horizontal padding measures 166.27
+       pixels, so this is that width with two pixels of slack against font
+       loading. Stated in rem rather than px because the value is a font
+       measurement and rem is what the component states its own sizes in.
+       Set on this one control and never on its siblings, since View history
+       is identical on every row and stretching it to match a different
+       control's width is the padded look component-usage.md forbids. */
+    .cancel-control {
+      min-width: 10.5rem;
     }
     /* Reserves the loader's height so the dialog does not open short and jump
        when the rows land. --canvas-loader-min-height is the token
@@ -156,13 +183,28 @@
        safe and ordinary, so this stays dismissable until frame sizing is
        confirmed on a real instance. -->
   <canvas-modal id="cancel-modal" size="small">
-    <canvas-modal-header>Cancel membership</canvas-modal-header>
+    <canvas-modal-header id="cancel-modal-header">Cancel membership</canvas-modal-header>
     <canvas-modal-content>
-      <p>This stops future charges right away for <b id="cancel-member-name"></b>. The membership stays active until the paid period ends, then it ends. Nothing is refunded.</p>
+      {% comment %}
+      Two copy blocks rather than one with pieces swapped in, so each path
+      names the member exactly once and neither has to borrow a sentence
+      worded for the other. Whichever block is hidden is inert, the reason
+      field is only read on the early path and it is the only field either
+      block carries. Hidden through the hidden attribute rather than a
+      display rule, since the component sets its own display.
+      {% endcomment %}
+      <div id="cancel-normal-copy">
+        <p>This stops future charges right away for <b id="cancel-member-name"></b>. The membership stays active until the paid period ends, then it ends. Nothing is refunded.</p>
+      </div>
+      <div id="cancel-early-copy" hidden>
+        <p><b id="cancel-early-member-name"></b> has taken <span id="cancel-charges-taken"></span> of {{ charges_before_cancel }} committed charges. Ending now waives the payments still owed on that commitment.</p>
+        <p>Future charges stop right away. The membership stays active until the paid period ends, then it ends. Nothing is refunded.</p>
+        <canvas-textarea id="cancel-reason" label="Reason" rows="3" maxlength="{{ cancel_reason_max_length }}" required placeholder="Why this membership is ending early"></canvas-textarea>
+      </div>
     </canvas-modal-content>
     <canvas-modal-footer>
       <canvas-button variant="ghost" data-action="dismiss-cancel">Keep membership</canvas-button>
-      <canvas-button variant="danger" data-action="confirm-cancel">Cancel membership</canvas-button>
+      <canvas-button variant="danger" data-action="confirm-cancel" id="cancel-confirm-btn">Cancel membership</canvas-button>
     </canvas-modal-footer>
   </canvas-modal>
 
@@ -170,15 +212,19 @@
     (function () {
       "use strict";
 
-      // 200 milliseconds, borrowed. component-usage.md names this as the
-      // one debounce interval the Canvas home app shares rather than one
-      // of the several literals its own consumers used to hand roll, but
-      // it names it for canvas-combobox and canvas-multi-select's remote
-      // search rather than for a hand rolled debounce like this one. It
-      // is still the right number to borrow here, short enough to feel
-      // immediate while collapsing a typed word into one request, and
-      // below 150 it would send a request per keystroke.
-      var DEBOUNCE_MS = 200;
+      // 250 milliseconds, which the engineer settled on 2026-09-09 and
+      // which is what item 6 of the direction of 2026-09-07 asked for in
+      // the first place. This was 200 for two days, borrowed from
+      // component-usage.md, which names 200 as the one debounce interval
+      // the Canvas home app shares rather than one of the several literals
+      // its own consumers used to hand roll. That borrowing was defensible
+      // and it was still a number nobody had asked for, and the reference
+      // names it for canvas-combobox and canvas-multi-select's remote
+      // search rather than for a hand rolled debounce like this one, so it
+      // was never quite the same case. Either value feels immediate and
+      // collapses a typed word into one request, and below 150 it would
+      // send a request per keystroke, so the ask wins on a tie.
+      var DEBOUNCE_MS = 250;
 
       var searchInput = document.getElementById("search-input");
       var statusFilter = document.getElementById("status-filter");
@@ -193,10 +239,18 @@
       var historyBody = document.getElementById("history-body");
 
       var cancelModal = document.getElementById("cancel-modal");
+      var cancelModalHeader = document.getElementById("cancel-modal-header");
       var cancelMemberName = document.getElementById("cancel-member-name");
+      var cancelEarlyMemberName = document.getElementById("cancel-early-member-name");
+      var cancelNormalCopy = document.getElementById("cancel-normal-copy");
+      var cancelEarlyCopy = document.getElementById("cancel-early-copy");
+      var cancelChargesTaken = document.getElementById("cancel-charges-taken");
+      var cancelReason = document.getElementById("cancel-reason");
+      var cancelConfirmBtn = document.getElementById("cancel-confirm-btn");
 
       var currentPage = {{ page|default:1 }};
       var activeCancelKey = null;
+      var activeCancelIsEarly = false;
       var rowsToken = 0;
       var historyToken = 0;
       var debounceTimer = null;
@@ -226,7 +280,7 @@
 
         hideBanner();
 
-        fetch("/plugin-io/api/apex_recurring_membership_payments/members/rows?" + params.toString(), {
+        fetch("/plugin-io/api/recurring_membership_payments/members/rows?" + params.toString(), {
           credentials: "same-origin"
         })
           .then(function (response) {
@@ -266,6 +320,12 @@
         fetchRows(1);
       });
 
+      // The error clears as soon as the staff member starts answering it,
+      // rather than staying red until they press the action a second time.
+      cancelReason.addEventListener("input", function () {
+        cancelReason.removeAttribute("error");
+      });
+
       filterForm.addEventListener("submit", function (event) {
         // A session with no JavaScript still submits this form as an
         // ordinary GET, so the form element and its name attributes stay.
@@ -289,7 +349,7 @@
         // runs synchronously here, before the fetch below ever starts.
         historyModal.open();
 
-        fetch("/plugin-io/api/apex_recurring_membership_payments/members/history/" + encodeURIComponent(patientKey), {
+        fetch("/plugin-io/api/recurring_membership_payments/members/history/" + encodeURIComponent(patientKey), {
           credentials: "same-origin"
         })
           .then(function (response) {
@@ -314,9 +374,33 @@
           });
       }
 
-      function openCancel(patientKey, memberName) {
-        activeCancelKey = patientKey;
-        cancelMemberName.textContent = memberName;
+      // The early cancellation of the 2026-09-08 engineer direction. One
+      // dialog serves both paths and the row's own data attributes decide
+      // which, so the table states the fact and the wording lives here.
+      // The reason field is cleared and its error dropped on every open,
+      // because a reason typed and abandoned must never ride along to the
+      // next member the dialog is retargeted at.
+      function openCancel(button) {
+        activeCancelKey = button.getAttribute("data-patient-key");
+        activeCancelIsEarly = button.getAttribute("data-early") === "1";
+        var memberName = button.getAttribute("data-member-name");
+
+        cancelNormalCopy.hidden = activeCancelIsEarly;
+        cancelEarlyCopy.hidden = !activeCancelIsEarly;
+        cancelReason.value = "";
+        cancelReason.removeAttribute("error");
+
+        if (activeCancelIsEarly) {
+          cancelEarlyMemberName.textContent = memberName;
+          cancelChargesTaken.textContent = button.getAttribute("data-charges-taken");
+          cancelModalHeader.textContent = "End membership early";
+          cancelConfirmBtn.textContent = "End early";
+        } else {
+          cancelMemberName.textContent = memberName;
+          cancelModalHeader.textContent = "Cancel membership";
+          cancelConfirmBtn.textContent = "Cancel membership";
+        }
+
         cancelModal.open();
       }
 
@@ -325,11 +409,20 @@
         if (!patientKey) {
           return;
         }
-        fetch("/plugin-io/api/apex_recurring_membership_payments/members/cancel", {
+        var overrideReason = activeCancelIsEarly ? cancelReason.value.trim() : "";
+        if (activeCancelIsEarly && !overrideReason) {
+          // The reason is what records that an override happened rather than
+          // an ordinary cancellation, so the dialog stays open and says which
+          // field is missing rather than sending a request the server would
+          // refuse with the three charge rule.
+          cancelReason.setAttribute("error", "Say why this membership is ending early.");
+          return;
+        }
+        fetch("/plugin-io/api/recurring_membership_payments/members/cancel", {
           method: "POST",
           credentials: "same-origin",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ patient_key: patientKey })
+          body: JSON.stringify({ patient_key: patientKey, override_reason: overrideReason })
         })
           .then(function (response) {
             return response.json().catch(function () { return {}; }).then(function (data) {
@@ -374,11 +467,20 @@
         if (!action) {
           return;
         }
+        // A disabled control must not act. canvas-button carries disabled on
+        // the host, and a click on the host still reaches this listener, so
+        // without this guard every disabled row control in the table fires,
+        // which is how a disabled Cancel membership opened the confirm dialog
+        // and then had the request refused by the server behind it. Guarded
+        // here rather than in each branch, so a new action inherits it.
+        if (target.hasAttribute("disabled")) {
+          return;
+        }
 
         if (action === "view-history") {
           openHistory(target.getAttribute("data-patient-key"), target.getAttribute("data-member-name"));
         } else if (action === "cancel-membership") {
-          openCancel(target.getAttribute("data-patient-key"), target.getAttribute("data-member-name"));
+          openCancel(target);
         } else if (action === "dismiss-cancel") {
           cancelModal.dismiss();
         } else if (action === "confirm-cancel") {

@@ -28,22 +28,27 @@ from datetime import datetime, timezone
 from http import HTTPStatus
 from uuid import uuid4
 
+from logger import log
+
 from canvas_sdk.effects import Effect
 from canvas_sdk.effects.simple_api import HTMLResponse, JSONResponse, Response
 from canvas_sdk.handlers.simple_api import PatientSessionAuthMixin, SimpleAPI, api
 from canvas_sdk.templates import render_to_string
+from canvas_sdk.v1.data.common import ContactPointState, ContactPointSystem
 from canvas_sdk.v1.data.patient import Patient
 
-from apex_recurring_membership_payments.logic.membership_logic import (
+from recurring_membership_payments.logic.membership_logic import (
     CANCEL_ELIGIBLE_STATUSES,
     CANCELLED_BY_LABELS,
-    CANCEL_MESSAGES,
     CANCEL_NOT_ELIGIBLE,
     CANCEL_PROVIDER_UNREACHABLE,
     CANCEL_TOO_EARLY,
     can_cancel,
     cancel_membership,
+    cancel_message,
     cancellation_opens_on,
+    commitment_charges,
+    ordinal,
     charge_rows,
     failure_effects,
     format_charge_amount,
@@ -52,14 +57,22 @@ from apex_recurring_membership_payments.logic.membership_logic import (
     member_banner_effect,
     recovery_effects,
 )
-from apex_recurring_membership_payments.logic.paytheory import (
+from recurring_membership_payments.logic.paytheory import (
     PayTheoryError,
     create_recurring_payment,
     update_recurring_payment,
 )
-from apex_recurring_membership_payments.models.membership import Membership, MembershipStatus
+from recurring_membership_payments.models.membership import Membership, MembershipStatus
 
 _CACHE_BUST = str(int(datetime.now(timezone.utc).timestamp()))
+
+# What the subscription is called at Pay Theory, which is the one string this
+# plugin sends the provider that a practice would want to be its own. It is a
+# plugin variable with this as the fallback, so an instance that declares
+# nothing still creates a named subscription rather than an unnamed one. Kept
+# here rather than in the shared logic module because this route is its only
+# caller, and a constant with one consumer belongs beside that consumer.
+DEFAULT_MEMBERSHIP_NAME = "Practice membership"
 
 # The status each cancel_membership reason code answers with, FORBIDDEN for
 # the two checks a request can fail before Pay Theory is ever reached, and
@@ -101,15 +114,48 @@ def _apply_all(effects: list) -> list[Effect]:
     return [effect if isinstance(effect, Effect) else effect.apply() for effect in effects]
 
 
+def _patient_email(patient: Patient | None) -> str:
+    """Return the patient's highest ranked email address, or an empty string when there is none.
+
+    Pay Theory refuses a payor carrying no email whenever its own subscription
+    emails are left on, which decision D11 of the specification says they are,
+    so this is what makes a join possible rather than a nicety. The lookup
+    mirrors the SDK's own primary_phone_number, the same telecom relation
+    filtered to a different system and ordered by rank, since a patient can
+    hold several addresses and rank is the platform's own answer to which one
+    is primary. An empty string is a legitimate answer and step 7 of the join
+    handles it, never a reason to fail.
+
+    The state filter is deliberately stricter than the SDK's own phone lookup,
+    which filters on system alone. A contact point carries an active or deleted
+    state, and an address the practice has removed is exactly the one that must
+    never be handed to a payment provider, since the provider will keep mailing
+    it long after Canvas stopped showing it.
+    """
+    if patient is None:
+        return ""
+    contact_point = (
+        patient.telecom.filter(
+            system=ContactPointSystem.EMAIL, state=ContactPointState.ACTIVE
+        )
+        .order_by("rank")
+        .first()
+    )
+    return (contact_point.value or "").strip() if contact_point else ""
+
+
 def _portal_context(
     *,
     patient_id: str,
+    patient_full_name: str,
+    patient_email: str,
     membership: Membership | None,
     payor_id: str,
     price_cents: int,
     interval_code: str,
     sdk_url: str,
     public_key: str,
+    charges_before_cancel: int,
 ) -> dict:
     """Build the full context dict templates/portal.html reads, documented at its own top.
 
@@ -137,6 +183,17 @@ def _portal_context(
         # have to be there, since one alone loads no SDK.
         "payments_configured": bool(sdk_url and public_key),
         "csp_nonce": uuid4().hex,
+        # Handed to Pay Theory as payorInfo when the page tokenizes a card,
+        # split there into the first_name and last_name that object actually
+        # reads. Without a name the provider mints a payor carrying none, and
+        # createRecurringPayment then refuses that payor with Invalid payor,
+        # full name required, proven on the sandbox on 2026-09-08.
+        "patient_full_name": patient_full_name,
+        # Handed to Pay Theory in the same payorInfo as the name. It refuses a
+        # payor with no email whenever its own subscription emails are left on,
+        # and decision D11 leaves them on, so this is what makes a first join
+        # possible. Empty is legitimate, and the join mutes rather than fails.
+        "patient_email": patient_email,
         "price_display": format_charge_amount(effective_price_cents),
         "interval_code": effective_interval,
         "membership_state": membership.status if membership else "join",
@@ -147,6 +204,11 @@ def _portal_context(
         "ends_display": "",
         "can_cancel": False,
         "cancel_opens_display": "",
+        # The commitment as a word rather than a number, because both places
+        # this page states it read as prose, once the third charge has been
+        # taken. The page never renders the digit, so the ordinal is worked
+        # out here and the template stays free of the rule.
+        "commitment_ordinal": ordinal(charges_before_cancel),
         "cancelled_by": "",
         "cancelled_by_label": "",
         "cancelled_display": "",
@@ -184,9 +246,11 @@ def _portal_context(
         context["ends_display"] = context["ends_display"] or format_iso_date(membership.ends_at)
 
     if membership.status in CANCEL_ELIGIBLE_STATUSES:
-        context["can_cancel"] = can_cancel(membership)
+        context["can_cancel"] = can_cancel(membership, charges_before_cancel)
         if not context["can_cancel"]:
-            context["cancel_opens_display"] = format_iso_date(cancellation_opens_on(membership))
+            context["cancel_opens_display"] = format_iso_date(
+                cancellation_opens_on(membership, charges_before_cancel)
+            )
 
     return context
 
@@ -220,12 +284,24 @@ class PortalAPI(PatientSessionAuthMixin, SimpleAPI):
 
         price_cents = int(self.secrets.get("MEMBERSHIP_PRICE_CENTS") or _DEFAULT_PRICE_CENTS)
         interval_code = self.secrets.get("MEMBERSHIP_INTERVAL") or _DEFAULT_INTERVAL
+        portal_patient = Patient.objects.filter(id=patient_id).first()
+        patient_full_name = ""
+        if portal_patient is not None:
+            patient_full_name = (
+                f"{portal_patient.first_name or ''} {portal_patient.last_name or ''}".strip()
+            )
+        if not patient_full_name:
+            patient_full_name = f"Canvas patient {patient_id}"
+
         context = _portal_context(
             patient_id=patient_id,
+            patient_full_name=patient_full_name,
+            patient_email=_patient_email(portal_patient),
             membership=membership,
             payor_id=raw_membership.payor_id if raw_membership else "",
             price_cents=price_cents,
             interval_code=interval_code,
+            charges_before_cancel=commitment_charges(self.secrets),
             sdk_url=self.secrets.get("PAYTHEORY_SDK_URL") or "",
             public_key=self.secrets.get("PAYTHEORY_PUBLIC_KEY") or "",
         )
@@ -310,6 +386,48 @@ class PortalAPI(PatientSessionAuthMixin, SimpleAPI):
         interval = self.secrets.get("MEMBERSHIP_INTERVAL") or _DEFAULT_INTERVAL
         posted_payor_id = (body.get("payor_id") or "").strip()
 
+        # Pay Theory requires one of payor_id and payor, which its own reference
+        # does not say and the sandbox proved on 2026-09-08 by refusing a call
+        # carrying neither. A returning member already has a payor_id and reuses
+        # it so the provider keeps one payor for them. A first time joiner has
+        # none, so the practice hands over the name it already holds and lets
+        # Pay Theory mint the payor. Nothing clinical goes in it.
+        # Pay Theory refuses a payor with no full name, and it refuses the call
+        # entirely when neither payor nor payor_id is given, so this must never
+        # produce an empty name. The first source that yields anything wins and
+        # the last one always does, because a join that fails on a blank name is
+        # worse than a payor labelled by the patient's own identifier.
+        name_source = "first_last"
+        full_name = f"{patient.first_name or ''} {patient.last_name or ''}".strip()
+        if not full_name:
+            name_source = "sdk_full_name"
+            full_name = str(getattr(patient, "full_name", "") or "").strip()
+        if not full_name:
+            name_source = "patient_id"
+            full_name = f"Canvas patient {patient_id}"
+        # Pay Theory answers a payor with no email address with Invalid payor,
+        # email address required when emails are not muted, proven on the
+        # sandbox on 2026-09-08 once the name was accepted. The when is the part
+        # that matters, the rule only applies while the provider is the one
+        # sending the receipts, so muting them removes it. This plugin mutes,
+        # which is why no join ever asks a patient for an address.
+        #
+        # The address is still sent when the record happens to hold one, because
+        # it costs nothing, it makes the payor at Pay Theory identifiable to
+        # somebody reading their dashboard, and it means every payor already
+        # carries one on the day the practice decides to unmute. It is never
+        # required, and a patient with no email on file joins exactly like a
+        # patient with one.
+        email = _patient_email(patient)
+        new_payor: dict[str, str] = {"full_name": full_name}
+        if email:
+            new_payor["email"] = email
+        log.info(
+            "Pay Theory payor contact resolved. name_source=%s email_on_record=%s",
+            name_source,
+            bool(email),
+        )
+
         try:
             result = create_recurring_payment(
                 self.secrets,
@@ -318,7 +436,13 @@ class PortalAPI(PatientSessionAuthMixin, SimpleAPI):
                 payment_interval=interval,
                 payment_method_id=payment_method_id,
                 payor_id=posted_payor_id or None,
-                recurring_name="Apex membership",
+                payor=None if posted_payor_id else new_payor,
+                # The provider sends no email for this subscription, so it never
+                # requires an address on the payor. Reversing this is one line
+                # here plus an address on every payor, and section 7 of the
+                # specification carries what that would cost.
+                mute_all_emails=True,
+                recurring_name=self.secrets.get("MEMBERSHIP_NAME") or DEFAULT_MEMBERSHIP_NAME,
                 metadata={"canvas_patient_id": patient_id},
             )
         except PayTheoryError:
@@ -400,7 +524,7 @@ class PortalAPI(PatientSessionAuthMixin, SimpleAPI):
         if reason:
             return [
                 JSONResponse(
-                    {"error": CANCEL_MESSAGES[reason]},
+                    {"error": cancel_message(reason, commitment_charges(self.secrets))},
                     status_code=_CANCEL_STATUS_BY_REASON[reason],
                 )
             ]

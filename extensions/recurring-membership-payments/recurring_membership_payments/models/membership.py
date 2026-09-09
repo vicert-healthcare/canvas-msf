@@ -11,7 +11,7 @@ from django.db.models import (
 
 from canvas_sdk.v1.data.base import CustomModel
 
-from apex_recurring_membership_payments.models.proxy import PatientProxy
+from recurring_membership_payments.models.proxy import PatientProxy
 
 
 class MembershipStatus:
@@ -53,6 +53,14 @@ class Membership(CustomModel):
     ends_at = CharField(max_length=10, default="", blank=True)
     cancelled_at = BigIntegerField(default=0)
     cancelled_by = CharField(max_length=16, default="", blank=True)
+    # Why a staff member ended this membership before its commitment was
+    # met, typed by them and empty on every ordinary cancellation. A non
+    # empty value is what says an override happened, so there is no boolean
+    # beside it to disagree with, and it is the only field the early
+    # cancellation added. The length matches CANCEL_REASON_MAX_LENGTH in
+    # membership_logic, which is also the maxlength the reason field on both
+    # staff dialogs carries, so what a staff member can type always fits.
+    cancel_override_reason = CharField(max_length=200, default="", blank=True)
     consent_at = BigIntegerField()
     failure_task_id = CharField(max_length=64, default="", blank=True)
     updated_at = BigIntegerField()

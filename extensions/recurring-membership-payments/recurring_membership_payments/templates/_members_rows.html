@@ -12,13 +12,18 @@ caller.
   rows        a list of dicts, one per member, each carrying patient_key,
               first_name, last_name, status, status_label,
               next_payment_date, amount, charge_date, charge_outcome,
-              card_brand, card_last_four, can_show_cancel and can_cancel
+              card_brand, card_last_four, can_show_cancel, can_cancel,
+              is_early_cancel, cancel_label, successful_charges and
+              cancel_blocked_reason
   q           the search text currently applied, "" when none
   status      the status filter currently applied, "" when none
   total       the total row count across every page for this search and
               filter, not just the page shown
   page        the page number currently shown, one based
   page_size   the number of rows a full page carries, fifty
+  charges_before_cancel  the number of successful charges a membership
+              commits to, read by the page's own early cancellation dialog
+              rather than by this fragment
 
 No other context key is read. No route is declared here, this file is a
 template only.
@@ -113,28 +118,35 @@ template only.
                 {% endif %}
               </canvas-table-cell>
               <canvas-table-cell actions>
-                <div class="row-actions">
-                  <a href="/patient/{{ row.patient_key }}" target="_blank" rel="noopener" style="display: inline-flex; align-items: center; gap: var(--space-mini)">
-                    Open in chart
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                      <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
-                      <polyline points="15 3 21 3 21 9"/>
-                      <line x1="10" y1="14" x2="21" y2="3"/>
-                    </svg>
-                  </a>
-                  <canvas-button variant="ghost" size="sm" data-action="view-history" data-patient-key="{{ row.patient_key }}" data-member-name="{{ row.first_name }} {{ row.last_name }}">View history</canvas-button>
-                  {% comment %}
-                  Always rendered and disabled rather than hidden where it does
-                  not apply, because a row missing one control pulls the whole
-                  cluster right and the column stops scanning as a column. The
-                  one condition is can_cancel, which is already false both for
-                  a membership no longer eligible at all and for one still
-                  short of the third successful charge. title carries the
-                  reason, since a row has no space for the explanation line
-                  the chart panel prints under its own disabled button.
-                  {% endcomment %}
-                  <canvas-button variant="ghost" size="sm" data-action="cancel-membership" data-patient-key="{{ row.patient_key }}" data-member-name="{{ row.first_name }} {{ row.last_name }}"{% if not row.can_cancel %} disabled title="{{ row.cancel_blocked_reason }}"{% endif %}>Cancel membership</canvas-button>
-                </div>
+                <a href="/patient/{{ row.patient_key }}" target="_blank" rel="noopener" style="display: inline-flex; align-items: center; gap: var(--space-mini)">
+                  Open in chart
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
+                    <polyline points="15 3 21 3 21 9"/>
+                    <line x1="10" y1="14" x2="21" y2="3"/>
+                  </svg>
+                </a>
+                <canvas-button variant="ghost" size="sm" data-action="view-history" data-patient-key="{{ row.patient_key }}" data-member-name="{{ row.first_name }} {{ row.last_name }}">View history</canvas-button>
+                {% comment %}
+                Always rendered and disabled rather than hidden where it does
+                not apply, because a row missing one control pulls the whole
+                cluster right and the column stops scanning as a column. The
+                condition is can_show_cancel rather than can_cancel, since
+                staff may end a membership before its commitment is met and
+                the only thing still stopping them is a membership that has
+                already ended or is already cancelling. title carries that
+                reason, since a row has no space for the explanation line the
+                chart panel prints under its own button.
+
+                The label is the whole signal this table gives about which
+                memberships are still inside their commitment, End early
+                rather than Cancel membership, which is why one fixed label
+                was rejected. data-early and data-charges-taken are what the
+                page's own dialog reads to word itself and to decide whether
+                to ask for a reason, so the row states the fact and the dialog
+                holds the wording.
+                {% endcomment %}
+                <canvas-button class="cancel-control" variant="ghost" size="sm" data-action="cancel-membership" data-patient-key="{{ row.patient_key }}" data-member-name="{{ row.first_name }} {{ row.last_name }}" data-early="{% if row.is_early_cancel %}1{% endif %}" data-charges-taken="{{ row.successful_charges }}"{% if not row.can_show_cancel %} disabled title="{{ row.cancel_blocked_reason }}"{% endif %}>{{ row.cancel_label }}</canvas-button>
               </canvas-table-cell>
             </canvas-table-row>
           {% endfor %}
